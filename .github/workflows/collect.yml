@@ -36,7 +36,7 @@ jobs:
         run: python scripts/collect_github.py
         continue-on-error: true
 
-      - name: 采集 ECC 更新
+      - name: 采集 GitHub 搜索（量化/金融项目）
         run: python scripts/collect_ecc.py
         continue-on-error: true
 
