@@ -35,47 +35,71 @@ collect:
 # 分级筛选配置（L1/L2/L3）
 # ============================================================
 classification:
-  # L1：直接可用的优化建议（参数调整、权重优化）
+  # L1：高价值信号（直接可用的优化建议）
   l1_keywords:
-    - "parameter"
-    - "weight"
-    - "threshold"
-    - "optimization"
-    - "improvement"
-    - "tuning"
-    - "adjustment"
+    - "trading"
+    - "quant"
+    - "backtest"
     - "factor"
     - "alpha"
     - "signal"
-    - "quant"
-    - "backtest"
     - "portfolio"
     - "risk"
-    - "trading"
+    - "optimization"
+    - "parameter"
+    - "weight"
+    - "threshold"
+    - "momentum"
+    - "reversal"
+    - "arbitrage"
+    - "volatility"
+    - "correlation"
+    - "regime"
+    - "stop loss"
+    - "take profit"
+    - "drawdown"
+    - "sharpe"
+    - "calmar"
+    - "sortino"
 
-  # L2：需要验证的想法（新策略、新思路）
+  # L2：中等价值线索（需要验证的想法）
   l2_keywords:
-    - "strategy"
     - "analysis"
-    - "model"
     - "indicator"
+    - "model"
     - "forecast"
     - "prediction"
-    - "momentum"
+    - "strategy"
     - "stock"
     - "market"
     - "financial"
+    - "price"
+    - "volume"
+    - "trend"
+    - "cycle"
+    - "seasonal"
+    - "anomaly"
+    - "machine learning"
+    - "deep learning"
+    - "neural network"
+    - "sentiment"
+    - "macro"
+    - "earnings"
+    - "dividend"
 
-  # L3：参考信息（趋势、论文、讨论）
+  # L3：参考素材（趋势、论文、讨论）
   l3_keywords:
     - "research"
     - "paper"
     - "discussion"
-    - "trend"
     - "blog"
     - "tutorial"
     - "overview"
     - "news"
+    - "guide"
+    - "introduction"
+    - "summary"
+    - "review"
 
 # ============================================================
 # 暂存区配置（TTL）
