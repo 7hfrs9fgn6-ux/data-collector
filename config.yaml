@@ -13,17 +13,23 @@ collect:
     languages: ["python", "javascript", "go", "rust"]
     max_items: 50
 
-  # ECC 更新监控
+  # ECC 仓库监控（已禁用，改用 GitHub 搜索作为替代）
   ecc:
-    enabled: true
+    enabled: false
     repo: "https://github.com/ecc-community/ecc"
     frequency_minutes: 60
     max_items: 20
 
-  # 技术论坛（预留）
-  forum:
-    enabled: false
-    frequency_minutes: 120
+  # GitHub 搜索（量化/金融相关项目）
+  github_search:
+    enabled: true
+    queries:
+      - "quantitative trading"
+      - "stock analysis"
+      - "factor model"
+      - "backtesting"
+      - "alpha factor"
+    max_items: 30
 
 # ============================================================
 # 分级筛选配置（L1/L2/L3）
@@ -36,13 +42,29 @@ classification:
     - "threshold"
     - "optimization"
     - "improvement"
+    - "tuning"
+    - "adjustment"
+    - "factor"
+    - "alpha"
+    - "signal"
+    - "quant"
+    - "backtest"
+    - "portfolio"
+    - "risk"
+    - "trading"
 
   # L2：需要验证的想法（新策略、新思路）
   l2_keywords:
     - "strategy"
-    - "signal"
     - "analysis"
-    - "factor"
+    - "model"
+    - "indicator"
+    - "forecast"
+    - "prediction"
+    - "momentum"
+    - "stock"
+    - "market"
+    - "financial"
 
   # L3：参考信息（趋势、论文、讨论）
   l3_keywords:
@@ -50,6 +72,10 @@ classification:
     - "paper"
     - "discussion"
     - "trend"
+    - "blog"
+    - "tutorial"
+    - "overview"
+    - "news"
 
 # ============================================================
 # 暂存区配置（TTL）
@@ -67,7 +93,6 @@ staging:
 signature:
   enabled: true
   algorithm: "HMAC-SHA256"
-  # 密钥从环境变量读取（不硬编码）
   key_env: "SIGNING_KEY"
 
 # ============================================================
