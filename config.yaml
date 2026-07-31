@@ -1,0 +1,87 @@
+# data-collector 采集配置
+# 普通开源项目风格，不含任何V系统信息
+
+# ============================================================
+# 采集配置
+# ============================================================
+collect:
+  # GitHub Trending 采集
+  github:
+    enabled: true
+    url: "https://github.com/trending"
+    frequency_minutes: 30
+    languages: ["python", "javascript", "go", "rust"]
+    max_items: 50
+
+  # ECC 更新监控
+  ecc:
+    enabled: true
+    repo: "https://github.com/ecc-community/ecc"
+    frequency_minutes: 60
+    max_items: 20
+
+  # 技术论坛（预留）
+  forum:
+    enabled: false
+    frequency_minutes: 120
+
+# ============================================================
+# 分级筛选配置（L1/L2/L3）
+# ============================================================
+classification:
+  # L1：直接可用的优化建议（参数调整、权重优化）
+  l1_keywords:
+    - "parameter"
+    - "weight"
+    - "threshold"
+    - "optimization"
+    - "improvement"
+
+  # L2：需要验证的想法（新策略、新思路）
+  l2_keywords:
+    - "strategy"
+    - "signal"
+    - "analysis"
+    - "factor"
+
+  # L3：参考信息（趋势、论文、讨论）
+  l3_keywords:
+    - "research"
+    - "paper"
+    - "discussion"
+    - "trend"
+
+# ============================================================
+# 暂存区配置（TTL）
+# ============================================================
+staging:
+  path: "./staging/"
+  ttl_hours: 24
+  max_size_mb: 100
+  max_files: 100
+  cleanup_interval_hours: 6
+
+# ============================================================
+# 签名配置
+# ============================================================
+signature:
+  enabled: true
+  algorithm: "HMAC-SHA256"
+  # 密钥从环境变量读取（不硬编码）
+  key_env: "SIGNING_KEY"
+
+# ============================================================
+# 安全检查配置
+# ============================================================
+security_check:
+  enabled: true
+  blocked_keywords:
+    - "v-system"
+    - "vsystem"
+    - "VSystem"
+    - "v_system"
+    - "private_repo"
+    - "内网"
+  blocked_patterns:
+    - ".*\\.local$"
+    - ".*\\.internal$"
