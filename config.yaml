@@ -13,7 +13,7 @@ collect:
     languages: ["python", "javascript", "go", "rust"]
     max_items: 50
 
-  # ECC 仓库监控（已禁用，改用 GitHub 搜索作为替代）
+  # ECC 仓库监控（已禁用）
   ecc:
     enabled: false
     repo: "https://github.com/ecc-community/ecc"
@@ -36,6 +36,7 @@ collect:
 # ============================================================
 classification:
   # L1：高价值信号（直接可用的优化建议）
+  # 匹配条件：命中3个及以上关键词，或2个关键词+stars>500
   l1_keywords:
     - "trading"
     - "quant"
@@ -61,34 +62,17 @@ classification:
     - "sharpe"
     - "calmar"
     - "sortino"
-
-  # L2：中等价值线索（需要验证的想法）
-  l2_keywords:
+    - "market"
     - "analysis"
+    - "strategy"
     - "indicator"
+    - "financial"
     - "model"
     - "forecast"
     - "prediction"
-    - "strategy"
-    - "stock"
-    - "market"
-    - "financial"
-    - "price"
-    - "volume"
-    - "trend"
-    - "cycle"
-    - "seasonal"
-    - "anomaly"
-    - "machine learning"
-    - "deep learning"
-    - "neural network"
-    - "sentiment"
-    - "macro"
-    - "earnings"
-    - "dividend"
 
-  # L3：参考素材（趋势、论文、讨论）
-  l3_keywords:
+  # L2：中等价值线索
+  l2_keywords:
     - "research"
     - "paper"
     - "discussion"
@@ -100,6 +84,19 @@ classification:
     - "introduction"
     - "summary"
     - "review"
+    - "data"
+    - "dataset"
+    - "finance"
+    - "economic"
+
+  # L3：参考素材（默认分类）
+  l3_keywords: []
+
+  # 分级阈值
+  thresholds:
+    l1_min_matches: 3
+    l1_star_threshold: 500
+    l2_min_matches: 2
 
 # ============================================================
 # 暂存区配置（TTL）
