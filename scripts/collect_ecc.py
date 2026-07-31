@@ -1,154 +1,179 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ECC 仓库更新监控模块
-采集 ECC 仓库的最新活动（commits、releases）
+GitHub 搜索采集模块
+采集与量化、金融相关的 GitHub 项目（作为 ECC 的替代数据源）
 """
 
 import requests
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
-from utils import save_json, get_timestamp, truncate_text
+from utils import save_json, get_timestamp, truncate_text, load_config
 
 
-class ECCCollector:
-    """ECC 仓库监控采集器"""
+class GitHubSearchCollector:
+    """GitHub 搜索采集器"""
 
     def __init__(self):
-        self.api_base = "https://api.github.com/repos"
-        self.repo_path = "ecc-community/ecc"
+        self.api_base = "https://api.github.com/search/repositories"
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "data-collector/1.0",
             "Accept": "application/vnd.github.v3+json"
         })
 
-    def collect(self, max_items: int = 20) -> Dict[str, Any]:
+    def collect(self, queries: Optional[List[str]] = None, max_items: int = 30) -> Dict[str, Any]:
         """
-        采集 ECC 仓库最新活动
+        采集 GitHub 搜索数据
 
         Args:
+            queries: 搜索关键词列表
             max_items: 最大采集数量
 
         Returns:
             Dict: {
                 "timestamp": "2026-07-31T10:00:00",
-                "source": "ecc",
+                "source": "github_search",
                 "total": 15,
                 "items": [...]
             }
         """
+        if queries is None:
+            queries = [
+                "quantitative trading",
+                "stock analysis",
+                "factor model",
+                "backtesting",
+                "alpha factor"
+            ]
+
         all_items = []
+        per_query_limit = max(5, max_items // len(queries) + 1)
 
-        # 1. 获取最新 commits
-        commits = self._fetch_commits(max_items)
-        all_items.extend(commits)
+        for query in queries:
+            items = self._search_repositories(query, per_query_limit)
+            all_items.extend(items)
 
-        # 2. 获取最新 releases
-        releases = self._fetch_releases(max_items // 2)
-        all_items.extend(releases)
+        # 去重（按 repo 名称）
+        seen = set()
+        unique_items = []
+        for item in all_items:
+            key = f"{item.get('owner')}/{item.get('repo')}"
+            if key not in seen:
+                seen.add(key)
+                unique_items.append(item)
 
-        # 按时间排序（最新的在前）
-        all_items.sort(key=lambda x: x.get('date', ''), reverse=True)
+        # 按 stars 排序
+        unique_items.sort(key=lambda x: x.get('stars', 0), reverse=True)
 
         return {
             "timestamp": get_timestamp(),
-            "source": "ecc",
-            "total": len(all_items),
-            "items": all_items[:max_items]
+            "source": "github_search",
+            "total": len(unique_items),
+            "items": unique_items[:max_items]
         }
 
-    def _fetch_commits(self, limit: int = 20) -> List[Dict]:
-        """获取最新的 commits"""
-        url = f"{self.api_base}/{self.repo_path}/commits"
-        params = {"per_page": limit}
+    def _search_repositories(self, query: str, limit: int = 5) -> List[Dict]:
+        """执行搜索"""
+        params = {
+            "q": query,
+            "sort": "stars",
+            "order": "desc",
+            "per_page": limit
+        }
 
         try:
-            resp = self.session.get(url, params=params, timeout=15)
+            resp = self.session.get(self.api_base, params=params, timeout=15)
             resp.raise_for_status()
             data = resp.json()
-            return self._parse_commits(data)
+            return self._parse_search_results(data, query)
         except Exception as e:
-            print(f"采集 ECC commits 失败: {e}")
+            print(f"搜索 '{query}' 失败: {e}")
             return []
 
-    def _fetch_releases(self, limit: int = 10) -> List[Dict]:
-        """获取最新的 releases"""
-        url = f"{self.api_base}/{self.repo_path}/releases"
-        params = {"per_page": limit}
-
-        try:
-            resp = self.session.get(url, params=params, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
-            return self._parse_releases(data)
-        except Exception as e:
-            print(f"采集 ECC releases 失败: {e}")
-            return []
-
-    def _parse_commits(self, commits: List[Dict]) -> List[Dict]:
-        """解析 commits 数据"""
+    def _parse_search_results(self, data: Dict, query: str) -> List[Dict]:
+        """解析搜索结果"""
         items = []
-        for commit in commits:
-            try:
-                author = commit.get('commit', {}).get('author', {})
-                message = commit.get('commit', {}).get('message', '')
-                sha = commit.get('sha', '')[:8]
+        repo_data = data.get('items', [])
 
-                # 过滤掉 merge commits
-                if message.startswith('Merge'):
+        for repo in repo_data:
+            try:
+                # 过滤掉明显不相关的项目
+                name = repo.get('name', '')
+                description = repo.get('description', '') or ''
+                full_name = repo.get('full_name', '')
+
+                # 计算相关性评分（基于关键词匹配）
+                relevance_score = self._calculate_relevance(
+                    name, description, query
+                )
+
+                # 只保留有一定相关性的项目
+                if relevance_score < 0.1:
                     continue
 
                 items.append({
-                    "type": "commit",
-                    "id": sha,
-                    "title": truncate_text(message.split('\n')[0], 100),
-                    "description": truncate_text('\n'.join(message.split('\n')[1:]), 200),
-                    "author": author.get('name', ''),
-                    "date": author.get('date', ''),
-                    "url": commit.get('html_url', ''),
+                    "id": full_name,
+                    "owner": repo.get('owner', {}).get('login', ''),
+                    "repo": name,
+                    "url": repo.get('html_url', ''),
+                    "description": truncate_text(description, 300),
+                    "stars": repo.get('stargazers_count', 0),
+                    "forks": repo.get('forks_count', 0),
+                    "language": repo.get('language', ''),
+                    "topics": repo.get('topics', []),
+                    "search_query": query,
+                    "relevance_score": round(relevance_score, 2)
                 })
-            except Exception:
+            except Exception as e:
+                print(f"解析仓库失败: {e}")
                 continue
+
         return items
 
-    def _parse_releases(self, releases: List[Dict]) -> List[Dict]:
-        """解析 releases 数据"""
-        items = []
-        for release in releases:
-            try:
-                items.append({
-                    "type": "release",
-                    "id": release.get('tag_name', ''),
-                    "title": release.get('name', '') or release.get('tag_name', ''),
-                    "description": truncate_text(release.get('body', ''), 200),
-                    "author": release.get('author', {}).get('login', ''),
-                    "date": release.get('published_at', ''),
-                    "url": release.get('html_url', ''),
-                    "is_prerelease": release.get('prerelease', False)
-                })
-            except Exception:
-                continue
-        return items
+    def _calculate_relevance(self, name: str, description: str, query: str) -> float:
+        """计算相关性评分（0-1）"""
+        text = f"{name} {description}".lower()
+        query_words = query.lower().split()
+
+        matches = 0
+        for word in query_words:
+            if word in text:
+                matches += 1
+
+        # 基础评分
+        if matches == 0:
+            return 0.0
+        base_score = matches / len(query_words)
+
+        # 额外关键词加分
+        extra_keywords = ['quant', 'finance', 'trading', 'backtest', 'factor', 'alpha']
+        extra_score = 0
+        for kw in extra_keywords:
+            if kw in text:
+                extra_score += 0.1
+
+        return min(1.0, base_score + extra_score)
 
 
-def collect_ecc_updates() -> Dict[str, Any]:
-    """公开接口：采集 ECC 更新"""
-    collector = ECCCollector()
+def collect_github_search() -> Dict[str, Any]:
+    """公开接口：采集 GitHub 搜索数据"""
+    collector = GitHubSearchCollector()
     config = load_config() if load_config else {}
 
-    max_items = config.get('collect', {}).get('ecc', {}).get('max_items', 20)
+    queries = config.get('collect', {}).get('github_search', {}).get('queries', [])
+    max_items = config.get('collect', {}).get('github_search', {}).get('max_items', 30)
 
-    result = collector.collect(max_items=max_items)
+    result = collector.collect(queries=queries, max_items=max_items)
 
     # 保存到暂存区
-    save_json(result, f"staging/ecc_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+    save_json(result, f"staging/search_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
 
     return result
 
 
 if __name__ == "__main__":
     from utils import load_config
-    data = collect_ecc_updates()
-    print(f"ECC 采集完成: {data['total']} 条记录")
+    data = collect_github_search()
+    print(f"搜索采集完成: {data['total']} 个项目")
