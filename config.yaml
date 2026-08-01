@@ -33,74 +33,38 @@ collect:
 
   # ============================================================
   # 新闻采集（公开库版）
+  # 只保留在 GitHub Actions 环境中稳定工作的 RSS 源
   # ============================================================
   news:
     enabled: true
     frequency_minutes: 30
-    # 每条新闻源采集条数（提升到 50）
     max_items_per_source: 50
-    # 总条数上限（提升到 300）
     max_total_items: 300
     max_age_hours: 24
-    # RSS/Atom 订阅源列表（已扩充至 40+ 源）
-    rss_feeds:
-      # ----- 中文财经 Google News -----
-      - "https://news.google.com/rss/search?q=finance+stocks+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-      - "https://news.google.com/rss/search?q=economy+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-      - "https://news.google.com/rss/search?q=stock+market+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-      - "https://news.google.com/rss/search?q=A股+股市+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-      - "https://news.google.com/rss/search?q=港股+美股+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-      - "https://news.google.com/rss/search?q=央行+政策+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-      - "https://news.google.com/rss/search?q=美联储+加息+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-      - "https://news.google.com/rss/search?q=新能源+汽车+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-      - "https://news.google.com/rss/search?q=半导体+芯片+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-      - "https://news.google.com/rss/search?q=医药+创新药+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-      - "https://news.google.com/rss/search?q=消费+零售+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-      - "https://news.google.com/rss/search?q=房地产+楼市+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-      - "https://news.google.com/rss/search?q=人工智能+AI+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-      - "https://news.google.com/rss/search?q=数字经济+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-      - "https://news.google.com/rss/search?q=光伏+储能+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
 
-      # ----- 国际财经 -----
+    # RSS/Atom 订阅源列表（仅保留已验证可用的源）
+    rss_feeds:
+      # ----- 国际财经（稳定） -----
       - "https://feeds.bloomberg.com/markets/news.rss"
       - "https://www.cnbc.com/id/10001147/device/rss/rss.html"
       - "https://www.cnbc.com/id/15837362/device/rss/rss.html"
       - "https://www.cnbc.com/id/15839135/device/rss/rss.html"
       - "https://www.ft.com/?format=rss"
-      - "https://www.economist.com/feeds/print-sections/77/business.xml"
-      - "https://www.economist.com/feeds/print-sections/79/finance-and-economics.xml"
-      - "https://www.wsj.com/xml/rss/3_7085.xml"
-      - "https://www.wsj.com/xml/rss/3_7031.xml"
-      - "https://www.wsj.com/xml/rss/3_7014.xml"
-      - "https://www.reuters.com/rss/businessNews"
-      - "https://www.reuters.com/rss/marketsNews"
-      - "https://www.reuters.com/rss/technologyNews"
-      - "https://www.reuters.com/rss/economicNews"
-      - "https://www.reuters.com/rss/financeNews"
-      - "https://www.reuters.com/rss/companyNews"
 
-      # ----- 宏观与经济数据 -----
-      - "https://news.google.com/rss/search?q=GDP+inflation+when:1d&hl=en-US&gl=US&ceid=US:en"
-      - "https://news.google.com/rss/search?q=unemployment+jobs+when:1d&hl=en-US&gl=US&ceid=US:en"
-      - "https://news.google.com/rss/search?q=federal+reserve+interest+rates+when:1d&hl=en-US&gl=US&ceid=US:en"
-      - "https://news.google.com/rss/search?q=commodities+oil+gold+when:1d&hl=en-US&gl=US&ceid=US:en"
-
-      # ----- 科技与创新 -----
+      # ----- 科技与创新（稳定） -----
       - "https://feeds.feedburner.com/TechCrunch"
       - "https://techmeme.com/feed.xml"
       - "https://www.theverge.com/rss/index.xml"
       - "https://www.wired.com/feed/rss"
       - "https://www.technologyreview.com/feed"
 
-      # ----- 综合新闻 -----
-      - "https://news.google.com/rss/search?q=world+news+when:1d&hl=en-US&gl=US&ceid=US:en"
-      - "https://news.google.com/rss/search?q=breaking+news+when:1d&hl=en-US&gl=US&ceid=US:en"
+      # ----- 备选：Reuters（部分可用） -----
+      - "https://www.reuters.com/rss/businessNews"
+      - "https://www.reuters.com/rss/marketsNews"
 
-      # ----- RSSHub 聚合（中国财经，备用） -----
+      # ----- RSSHub 聚合（中国财经，备用，偶尔可用） -----
       - "https://rsshub.app/eastmoney/kuaixun"
       - "https://rsshub.app/finance/163/latest"
-      - "https://rsshub.app/sina/finance"
-      - "https://rsshub.app/tencent/news/finance"
 
     # 去重配置
     dedupe:
