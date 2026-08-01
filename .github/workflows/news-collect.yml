@@ -1,5 +1,6 @@
 # data-collector 新闻采集工作流
-# 使用完全免费、无需认证的数据源
+# 使用 RSS/Atom + feedparser + GDELT/Hacker News
+# 所有数据源无需 API Key
 
 name: News Collection
 
@@ -42,12 +43,12 @@ jobs:
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 pyyaml
+          pip install requests feedparser beautifulsoup4 pyyaml
 
       - name: 创建暂存区目录
         run: mkdir -p staging
 
-      - name: 采集新闻（免费公开源）
+      - name: 采集新闻
         run: |
           echo "📡 开始采集新闻..."
           python scripts/collect_news.py --limit ${{ github.event.inputs.limit || 15 }}
@@ -86,21 +87,6 @@ jobs:
           python scripts/cleanup.py --days 7
         continue-on-error: true
 
-      - name: 生成统计报告
-        run: |
-          echo "📊 ========================================"
-          echo "📊 新闻采集完成统计"
-          echo "📊 ========================================"
-          echo "📅 时间: $(date '+%Y-%m-%d %H:%M:%S %Z')"
-          echo ""
-          echo "📂 暂存区文件列表:"
-          ls -la staging/*.json 2>/dev/null | wc -l | xargs echo "   文件数:"
-          echo ""
-          echo "📦 最新文件:"
-          ls -lt staging/*.json 2>/dev/null | head -3
-          echo ""
-          echo "📊 ========================================"
-
       - name: 上传新闻数据包
         uses: actions/upload-artifact@v4
         with:
@@ -111,3 +97,5 @@ jobs:
       - name: 完成日志
         run: |
           echo "✅ 新闻采集完成: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+          echo "📂 文件列表:"
+          ls -la staging/ 2>/dev/null || echo "   (空)"
