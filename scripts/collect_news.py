@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 data-collector 新闻采集脚本（公开库版）
-只使用完全免费、无需认证的数据源
+使用 RSS + HTML 抓取，无需任何 API Key
 """
 
 import os
@@ -11,9 +11,9 @@ import json
 import time
 import argparse
 import hashlib
-from datetime import datetime, timedelta
+import re
+from datetime import datetime
 from typing import List, Dict, Any
-import logging
 
 try:
     import requests
@@ -22,11 +22,17 @@ except ImportError:
     sys.exit(1)
 
 try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    print("❌ 缺少 beautifulsoup4 依赖，请安装: pip install beautifulsoup4")
+    sys.exit(1)
+
+try:
     import yaml
 except ImportError:
-    print("⚠️ 缺少 yaml 依赖，将使用 JSON 配置")
     yaml = None
 
+import logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -35,7 +41,6 @@ logger = logging.getLogger(__name__)
 
 
 def load_config() -> Dict[str, Any]:
-    """加载配置文件"""
     config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.yaml')
     if os.path.exists(config_path):
         try:
@@ -51,29 +56,27 @@ def load_config() -> Dict[str, Any]:
 
 
 class FreeNewsCollector:
-    """免费新闻采集器（无需任何API Key）"""
+    """免费新闻采集器（RSS + HTML 抓取，无需API Key）"""
 
     def __init__(self, config: Dict[str, Any] = None):
         self.config = config or load_config()
         self.news_config = self.config.get('collect', {}).get('news', {})
         self.max_per_source = self.news_config.get('max_items_per_source', 15)
-        self.timeout = 10
+        self.timeout = 15
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/json, text/plain, */*',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Referer': 'https://finance.eastmoney.com/'
         })
 
     def collect_all(self) -> List[Dict[str, Any]]:
-        """采集所有免费数据源"""
         all_news = []
         source_stats = {}
 
-        # 数据源1：东方财富快讯（免费公开接口）
+        # 数据源1：东方财富 RSS
         try:
-            news = self._fetch_eastmoney()
+            news = self._fetch_eastmoney_rss()
             all_news.extend(news)
             source_stats['eastmoney'] = len(news)
             logger.info(f"   ✅ eastmoney: 采集到 {len(news)} 条新闻")
@@ -81,9 +84,9 @@ class FreeNewsCollector:
             logger.error(f"   ❌ eastmoney 采集失败: {e}")
             source_stats['eastmoney'] = 0
 
-        # 数据源2：新浪财经新闻（免费公开接口）
+        # 数据源2：新浪 RSS
         try:
-            news = self._fetch_sina()
+            news = self._fetch_sina_rss()
             all_news.extend(news)
             source_stats['sina'] = len(news)
             logger.info(f"   ✅ sina: 采集到 {len(news)} 条新闻")
@@ -91,9 +94,9 @@ class FreeNewsCollector:
             logger.error(f"   ❌ sina 采集失败: {e}")
             source_stats['sina'] = 0
 
-        # 数据源3：网易财经新闻（免费公开接口）
+        # 数据源3：网易 RSS（备用）
         try:
-            news = self._fetch_163()
+            news = self._fetch_163_rss()
             all_news.extend(news)
             source_stats['163'] = len(news)
             logger.info(f"   ✅ 163: 采集到 {len(news)} 条新闻")
@@ -105,143 +108,122 @@ class FreeNewsCollector:
         logger.info(f"📊 来源分布: {source_stats}")
         return all_news
 
-    def _fetch_eastmoney(self) -> List[Dict[str, Any]]:
-        """采集东方财富快讯（免费公开接口）"""
-        url = "https://newsapi.eastmoney.com/kuaixun/v1/getnews_limited"
-        params = {
-            'pageIndex': '1',
-            'pageSize': str(self.max_per_source),
-            'type': '1'
-        }
+    def _fetch_eastmoney_rss(self) -> List[Dict[str, Any]]:
+        """采集东方财富 RSS"""
+        rss_url = "http://news.eastmoney.com/rss/news.xml"
         try:
-            resp = self.session.get(url, params=params, timeout=self.timeout)
+            resp = self.session.get(rss_url, timeout=self.timeout)
             if resp.status_code != 200:
-                logger.debug(f"东财API返回: {resp.status_code}")
-                return self._fetch_eastmoney_fallback()
+                logger.debug(f"东财RSS返回: {resp.status_code}")
+                return []
 
-            data = resp.json()
-            articles = data.get('data', {}).get('list', [])
+            # 解析 XML
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(resp.content)
 
+            items = root.findall('./channel/item')
             result = []
-            for item in articles[:self.max_per_source]:
-                title = item.get('title', '')
-                if not title:
+            for item in items[:self.max_per_source]:
+                title = item.find('title')
+                link = item.find('link')
+                pub_date = item.find('pubDate')
+                description = item.find('description')
+
+                title_text = title.text if title is not None else ''
+                if not title_text:
                     continue
+
                 result.append({
-                    'title': title,
-                    'summary': item.get('summary', title),
-                    'content': item.get('content', title),
-                    'publish_time': item.get('publishTime', ''),
+                    'title': title_text.strip(),
+                    'summary': description.text.strip() if description is not None and description.text else title_text.strip(),
+                    'content': title_text.strip(),
+                    'publish_time': pub_date.text if pub_date is not None else datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     'source': '东方财富',
                     'source_type': 'eastmoney',
-                    'url': item.get('url', f"https://news.eastmoney.com/{int(time.time())}"),
+                    'url': link.text if link is not None else '',
                     'collected_at': datetime.now().isoformat()
                 })
             return result
         except Exception as e:
-            logger.debug(f"东财API调用失败: {e}")
+            logger.debug(f"东财RSS失败: {e}")
             return []
 
-    def _fetch_eastmoney_fallback(self) -> List[Dict[str, Any]]:
-        """东财备选：抓取HTML页面"""
-        url = "https://finance.eastmoney.com/"
+    def _fetch_sina_rss(self) -> List[Dict[str, Any]]:
+        """采集新浪 RSS"""
+        rss_url = "https://rss.sina.com.cn/roll/news/finance.xml"
         try:
-            resp = self.session.get(url, timeout=self.timeout)
+            resp = self.session.get(rss_url, timeout=self.timeout)
             if resp.status_code != 200:
-                return []
-            # 简化处理：解析HTML获取新闻标题
-            import re
-            html = resp.text
-            titles = re.findall(r'<a[^>]*>([^<]*财经[^<]*)</a>', html)
-            result = []
-            for title in titles[:self.max_per_source]:
-                if len(title) > 10:
-                    result.append({
-                        'title': title.strip(),
-                        'summary': title.strip(),
-                        'content': title.strip(),
-                        'publish_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        'source': '东方财富',
-                        'source_type': 'eastmoney',
-                        'url': '',
-                        'collected_at': datetime.now().isoformat()
-                    })
-            return result
-        except Exception as e:
-            logger.debug(f"东财备选失败: {e}")
-            return []
-
-    def _fetch_sina(self) -> List[Dict[str, Any]]:
-        """采集新浪财经新闻（免费公开接口）"""
-        url = "https://api.finance.sina.com.cn/api/finance_api"
-        params = {
-            'page': '1',
-            'num': str(self.max_per_source),
-            'type': '1'
-        }
-        try:
-            # 尝试使用新浪财经公开API
-            resp = self.session.get(url, params=params, timeout=self.timeout)
-            if resp.status_code != 200:
+                logger.debug(f"新浪RSS返回: {resp.status_code}")
                 return []
 
-            data = resp.json()
-            items = data.get('result', {}).get('data', [])
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(resp.content)
 
+            items = root.findall('./channel/item')
             result = []
             for item in items[:self.max_per_source]:
-                title = item.get('title', '')
-                if not title:
+                title = item.find('title')
+                link = item.find('link')
+                pub_date = item.find('pubDate')
+                description = item.find('description')
+
+                title_text = title.text if title is not None else ''
+                if not title_text:
                     continue
+
                 result.append({
-                    'title': title,
-                    'summary': item.get('summary', title),
-                    'content': item.get('content', title),
-                    'publish_time': item.get('ctime', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+                    'title': title_text.strip(),
+                    'summary': description.text.strip() if description is not None and description.text else title_text.strip(),
+                    'content': title_text.strip(),
+                    'publish_time': pub_date.text if pub_date is not None else datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     'source': '新浪财经',
                     'source_type': 'sina',
-                    'url': item.get('url', ''),
+                    'url': link.text if link is not None else '',
                     'collected_at': datetime.now().isoformat()
                 })
             return result
         except Exception as e:
-            logger.debug(f"新浪API调用失败: {e}")
+            logger.debug(f"新浪RSS失败: {e}")
             return []
 
-    def _fetch_163(self) -> List[Dict[str, Any]]:
-        """采集网易财经新闻（免费公开接口）"""
-        url = "https://api.news.163.com/news/getList"
-        params = {
-            'page': '1',
-            'size': str(self.max_per_source),
-            'subId': 'finance'
-        }
+    def _fetch_163_rss(self) -> List[Dict[str, Any]]:
+        """采集网易 RSS"""
+        rss_url = "https://news.163.com/special/00011K7l/news_finance.xml"
         try:
-            resp = self.session.get(url, params=params, timeout=self.timeout)
+            resp = self.session.get(rss_url, timeout=self.timeout)
             if resp.status_code != 200:
+                logger.debug(f"网易RSS返回: {resp.status_code}")
                 return []
 
-            data = resp.json()
-            items = data.get('data', [])
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(resp.content)
 
+            items = root.findall('./channel/item')
             result = []
             for item in items[:self.max_per_source]:
-                title = item.get('title', '')
-                if not title:
+                title = item.find('title')
+                link = item.find('link')
+                pub_date = item.find('pubDate')
+                description = item.find('description')
+
+                title_text = title.text if title is not None else ''
+                if not title_text:
                     continue
+
                 result.append({
-                    'title': title,
-                    'summary': item.get('summary', title),
-                    'content': item.get('content', title),
-                    'publish_time': item.get('ctime', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+                    'title': title_text.strip(),
+                    'summary': description.text.strip() if description is not None and description.text else title_text.strip(),
+                    'content': title_text.strip(),
+                    'publish_time': pub_date.text if pub_date is not None else datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     'source': '网易财经',
                     'source_type': '163',
-                    'url': item.get('url', ''),
+                    'url': link.text if link is not None else '',
                     'collected_at': datetime.now().isoformat()
                 })
             return result
         except Exception as e:
-            logger.debug(f"网易API调用失败: {e}")
+            logger.debug(f"网易RSS失败: {e}")
             return []
 
 
@@ -257,9 +239,7 @@ def generate_article_id(article: Dict[str, Any]) -> str:
 
 
 def save_raw_news(news_list: List[Dict[str, Any]], output_dir: str = "staging"):
-    """保存原始新闻到JSON"""
     os.makedirs(output_dir, exist_ok=True)
-
     for article in news_list:
         article['_id'] = generate_article_id(article)
 
@@ -283,7 +263,7 @@ def save_raw_news(news_list: List[Dict[str, Any]], output_dir: str = "staging"):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='免费新闻采集')
+    parser = argparse.ArgumentParser(description='免费新闻采集（RSS + HTML）')
     parser.add_argument('--limit', type=int, default=15,
                         help='每条新闻源采集条数（默认15）')
     parser.add_argument('--output', type=str, default='staging',
@@ -291,7 +271,7 @@ def main():
     args = parser.parse_args()
 
     logger.info("=" * 50)
-    logger.info("📡 data-collector 新闻采集启动（公开库版·无需Key）")
+    logger.info("📡 data-collector 新闻采集启动（RSS版·无需Key）")
     logger.info(f"📅 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"📊 单源限制: {args.limit} 条")
     logger.info("=" * 50)
@@ -300,7 +280,12 @@ def main():
     collector = FreeNewsCollector(config)
     news_list = collector.collect_all()
 
-    save_raw_news(news_list, args.output)
+    if news_list:
+        save_raw_news(news_list, args.output)
+    else:
+        # 生成空包，避免后续流程中断
+        logger.warning("⚠️ 未采集到任何新闻，生成空包")
+        save_raw_news([], args.output)
 
     logger.info("=" * 50)
     logger.info(f"✅ 新闻采集完成: {len(news_list)} 条")
