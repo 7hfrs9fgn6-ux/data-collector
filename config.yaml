@@ -13,13 +13,6 @@ collect:
     languages: ["python", "javascript", "go", "rust"]
     max_items: 50
 
-  # ECC 仓库监控（已禁用）
-  ecc:
-    enabled: false
-    repo: "https://github.com/ecc-community/ecc"
-    frequency_minutes: 60
-    max_items: 20
-
   # GitHub 搜索（量化/金融相关项目）
   github_search:
     enabled: true
@@ -31,12 +24,35 @@ collect:
       - "alpha factor"
     max_items: 30
 
+  # N-13 新闻采集
+  news:
+    enabled: true
+    sources:
+      eastmoney:
+        enabled: true
+        timeout: 10
+        max_articles: 30
+      tianxing:
+        enabled: true
+        api_key_env: "TIANXING_API_KEY"
+        timeout: 8
+        max_articles: 20
+        # 国内新闻接口
+        domestic_url: "https://api.tianapi.com/guonei/index"
+        # 国际新闻接口
+        international_url: "https://api.tianapi.com/world/index"
+      newsapi:
+        enabled: true
+        api_key_env: "NEWSAPI_API_KEY"
+        timeout: 8
+        max_articles: 20
+        query: "finance OR stock OR market OR economy"
+
 # ============================================================
 # 分级筛选配置（L1/L2/L3）
 # ============================================================
 classification:
   # L1：高价值信号（直接可用的优化建议）
-  # 匹配条件：命中3个及以上关键词，或2个关键词+stars>500
   l1_keywords:
     - "trading"
     - "quant"
@@ -89,9 +105,6 @@ classification:
     - "finance"
     - "economic"
 
-  # L3：参考素材（默认分类）
-  l3_keywords: []
-
   # 分级阈值
   thresholds:
     l1_min_matches: 3
@@ -107,6 +120,25 @@ staging:
   max_size_mb: 100
   max_files: 100
   cleanup_interval_hours: 6
+
+# ============================================================
+# ★ 公开库拉取配置（供外部读取）
+# ============================================================
+public_repo:
+  # Artifact 名称（私密库拉取时使用）
+  artifact_name: "collected-data"
+  # 数据包版本
+  version: "3.0"
+  # 拉取超时（秒）
+  pull_timeout: 30
+  # 签名是否启用
+  signature_enabled: true
+  # 签名算法
+  signature_algorithm: "HMAC-SHA256"
+  # 签名密钥环境变量名（公开库侧）
+  signing_key_env: "SIGNING_KEY"
+  # 数据包保留天数（GitHub Artifact）
+  retention_days: 7
 
 # ============================================================
 # 签名配置
