@@ -1,5 +1,5 @@
 # data-collector 采集配置
-# 普通开源项目风格，不含任何V系统信息
+# 普通开源项目风格
 
 # ============================================================
 # 采集配置
@@ -32,7 +32,8 @@ collect:
     max_items: 30
 
   # ============================================================
-  # ★ ★ ★ 新增：新闻采集（N-13 迁移） ★ ★ ★
+  # 新闻采集（公开库版）
+  # 只使用完全免费、无需认证的公开数据源
   # ============================================================
   news:
     enabled: true
@@ -44,21 +45,19 @@ collect:
     max_total_items: 80
     # 新闻时效（超过此时间的新闻不进入打包）
     max_age_hours: 24
-    # 数据源配置
+    # 数据源配置（仅免费公开源，无需任何API Key）
     sources:
       eastmoney:
         enabled: true
-        type: "stock_news"
+        type: "public_api"
         timeout: 10
-      tianxing:
+      sina:
         enabled: true
-        type: "news_api"
-        key_env: "TIANXING_API_KEY"
+        type: "public_api"
         timeout: 10
-      newsapi:
+      163:
         enabled: true
-        type: "news_api"
-        key_env: "NEWSAPI_KEY"
+        type: "public_api"
         timeout: 10
     # 去重配置
     dedupe:
