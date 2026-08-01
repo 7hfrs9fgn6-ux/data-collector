@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       limit:
-        description: '每条新闻源采集条数（默认15）'
+        description: '每条新闻源采集条数（默认50）'
         type: number
-        default: 15
+        default: 50
       skip_sign:
         description: '跳过签名（测试用）'
         type: boolean
