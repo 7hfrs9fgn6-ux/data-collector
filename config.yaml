@@ -33,50 +33,30 @@ collect:
 
   # ============================================================
   # 新闻采集（公开库版）
-  # 只使用完全免费、无需认证的公开数据源
   # ============================================================
   news:
     enabled: true
-    # 采集频率：每30分钟（与工作流 schedule 保持一致）
     frequency_minutes: 30
-    # 每次采集最大条数（每个来源）
     max_items_per_source: 15
-    # 总条数上限（打包时截断）
     max_total_items: 80
-    # 新闻时效（超过此时间的新闻不进入打包）
     max_age_hours: 24
-    # 数据源配置（仅免费公开源，无需任何API Key）
-    sources:
-      eastmoney:
-        enabled: true
-        type: "public_api"
-        timeout: 10
-      sina:
-        enabled: true
-        type: "public_api"
-        timeout: 10
-      163:
-        enabled: true
-        type: "public_api"
-        timeout: 10
+    # RSS/Atom 订阅源列表（可自由增删）
+    rss_feeds:
+      - "https://news.google.com/rss/search?q=finance+stocks+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
+      - "https://news.google.com/rss/search?q=economy+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
+      - "https://feeds.bloomberg.com/markets/news.rss"
+      - "https://www.cnbc.com/id/10001147/device/rss/rss.html"
     # 去重配置
     dedupe:
       enabled: true
-      # URL 指纹去重（主键）
       use_url_fingerprint: true
-      # Title 相似度去重（备选，当 URL 缺失时）
-      use_title_similarity: true
-      # 相似度阈值（0.85 = 85% 相似即视为重复）
-      title_similarity_threshold: 0.85
-      # Title MD5 去重（精确匹配）
       use_title_md5: true
+      title_similarity_threshold: 0.85
 
 # ============================================================
 # 分级筛选配置（L1/L2/L3）
 # ============================================================
 classification:
-  # L1：高价值信号（直接可用的优化建议）
-  # 匹配条件：命中3个及以上关键词，或2个关键词+stars>500
   l1_keywords:
     - "trading"
     - "quant"
@@ -111,7 +91,6 @@ classification:
     - "forecast"
     - "prediction"
 
-  # L2：中等价值线索
   l2_keywords:
     - "research"
     - "paper"
@@ -129,10 +108,8 @@ classification:
     - "finance"
     - "economic"
 
-  # L3：参考素材（默认分类）
   l3_keywords: []
 
-  # 分级阈值
   thresholds:
     l1_min_matches: 3
     l1_star_threshold: 500
@@ -157,17 +134,19 @@ signature:
   key_env: "SIGNING_KEY"
 
 # ============================================================
-# 安全检查配置
+# 安全检查配置（通用敏感词检查，不含任何项目特有信息）
 # ============================================================
 security_check:
   enabled: true
   blocked_keywords:
-    - "v-system"
-    - "vsystem"
-    - "VSystem"
-    - "v_system"
-    - "private_repo"
-    - "内网"
+    - "secret"
+    - "password"
+    - "api_key"
+    - "token"
+    - "credential"
+    - "confidential"
+    - "internal"
   blocked_patterns:
     - ".*\\.local$"
     - ".*\\.internal$"
+    - ".*\\.private$"
