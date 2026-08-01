@@ -32,41 +32,85 @@ collect:
     max_items: 30
 
   # ============================================================
-  # 新闻采集（公开库版）
-  # 只保留在 GitHub Actions 环境中稳定工作的 RSS 源
+  # 新闻采集（公开库版）- 完整版
+  # 覆盖：国际财经 + 中文财经 + AI/科技 + 宏观数据
+  # 所有源均无需 API Key，零泄露风险
   # ============================================================
   news:
     enabled: true
     frequency_minutes: 30
     max_items_per_source: 50
-    max_total_items: 300
+    max_total_items: 400
     max_age_hours: 24
 
-    # RSS/Atom 订阅源列表（仅保留已验证可用的源）
+    # ============================================================
+    # RSS/Atom 订阅源列表（按类别分组）
+    # ============================================================
     rss_feeds:
-      # ----- 国际财经（稳定） -----
+
+      # ----- 1. 国际财经（核心） -----
       - "https://feeds.bloomberg.com/markets/news.rss"
       - "https://www.cnbc.com/id/10001147/device/rss/rss.html"
       - "https://www.cnbc.com/id/15837362/device/rss/rss.html"
       - "https://www.cnbc.com/id/15839135/device/rss/rss.html"
       - "https://www.ft.com/?format=rss"
 
-      # ----- 科技与创新（稳定） -----
+      # ----- 2. 国际财经（补充） -----
+      - "https://www.marketwatch.com/rss/headline"
+      - "https://www.investing.com/rss/news_1063.rss"
+      - "https://seekingalpha.com/tag/editors-picks.xml"
+      - "https://www.marketbeat.com/rss/instant-alerts.xml"
+      - "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"
+
+      # ----- 3. 中文财经（新增） -----
+      - "https://rsshub.app/wallstreetcn/hot/"
+      - "https://rsshub.app/jin10/important/"
+      - "https://rsshub.app/cls/hot/"
+      - "https://rsshub.app/36kr/news"
+      - "https://rsshub.app/tencent/news/finance"
+      - "https://rsshub.app/v2ex/hot"
+      - "https://rsshub.app/weibo/search/财经"
+
+      # ----- 4. AI / 前沿科技 -----
       - "https://feeds.feedburner.com/TechCrunch"
       - "https://techmeme.com/feed.xml"
       - "https://www.theverge.com/rss/index.xml"
       - "https://www.wired.com/feed/rss"
       - "https://www.technologyreview.com/feed"
+      - "https://huggingface.co/blog/feed.xml"
+      - "https://openai.com/news/rss.xml"
+      - "https://www.anthropic.com/rss.xml"
+      - "https://export.arxiv.org/rss/cs.AI"
+      - "https://export.arxiv.org/rss/cs.LG"
+      - "https://rsshub.app/producthunt/today"
+      - "https://rsshub.app/dev.to"
 
-      # ----- 备选：Reuters（部分可用） -----
+      # ----- 5. 宏观与政策（新增） -----
+      - "https://www.federalreserve.gov/feeds/press_all.xml"
+      - "https://www.treasury.gov/press-center/news/Pages/rss.aspx"
+      - "https://www.sec.gov/news/pressreleases.rss"
+
+      # ----- 6. 备选：Reuters（部分可用） -----
       - "https://www.reuters.com/rss/businessNews"
       - "https://www.reuters.com/rss/marketsNews"
 
-      # ----- RSSHub 聚合（中国财经，备用，偶尔可用） -----
+      # ----- 7. RSSHub 聚合（中国财经，备用） -----
       - "https://rsshub.app/eastmoney/kuaixun"
       - "https://rsshub.app/finance/163/latest"
 
+      # ----- 8. 加密货币（新增） -----
+      - "https://cointelegraph.com/rss"
+      - "https://www.coindesk.com/arc/outboundfeeds/rss/"
+
+      # ----- 9. 综合新闻（新增） -----
+      - "https://rsshub.app/bbc/chinese"
+      - "https://rsshub.app/reuters/news"
+      - "https://rsshub.app/nytimes/global"
+      - "https://rsshub.app/wsj/asia"
+
+    # ============================================================
     # 去重配置
+    # ============================================================
     dedupe:
       enabled: true
       use_url_fingerprint: true
