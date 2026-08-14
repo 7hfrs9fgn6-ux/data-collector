@@ -60,6 +60,8 @@ jobs:
 
       - name: 数据签名
         run: python scripts/sign.py
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
         continue-on-error: true
 
       - name: 打印暂存区状态
