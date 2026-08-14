@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-公开库 - 北向资金采集模块（使用 a-stock-data 库）
-从东方财富数据中心获取沪深港通资金流向
+公开库 - 北向资金采集模块（cn-funds-mcp 版）
+通过 cn-funds-mcp MCP 服务获取北向资金数据
 频率：每30分钟
-数据源：a-stock-data → 缓存
 """
 
 import sys
 import os
-import time
-from datetime import datetime, timedelta
+import json
+import subprocess
+from datetime import datetime
 from typing import Dict, List, Any, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -24,41 +24,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# 尝试导入 a-stock-data 库
-# ============================================================
-try:
-    from a_stock_adapter import eastmoney_datacenter
-    A_STOCK_AVAILABLE = True
-    logger.info("✅ a-stock-data 已加载（通过 a_stock_adapter）")
-except ImportError:
-    try:
-        from a_stock_data import eastmoney_datacenter
-        A_STOCK_AVAILABLE = True
-        logger.info("✅ a-stock-data 已加载（通过 a_stock_data）")
-    except ImportError:
-        A_STOCK_AVAILABLE = False
-        logger.warning("⚠️ a-stock-data 不可用，将使用 requests 备选")
-
 
 class NorthFlowCollector:
-    """北向资金采集器（a-stock-data）"""
+    """北向资金采集器（cn-funds-mcp）"""
 
     def __init__(self):
         self.config = load_config()
-        self.session = None
-        if not A_STOCK_AVAILABLE:
-            try:
-                import requests
-                self.session = requests.Session()
-                self.session.headers.update({
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Referer": "https://data.eastmoney.com/",
-                    "Accept": "application/json"
-                })
-                HAS_REQUESTS = True
-            except ImportError:
-                HAS_REQUESTS = False
 
     def collect(self) -> Dict[str, Any]:
         result = {
@@ -68,26 +39,16 @@ class NorthFlowCollector:
             "items": []
         }
 
-        # 方法1：使用 a-stock-data（优先）
-        if A_STOCK_AVAILABLE:
-            data = self._fetch_from_a_stock()
-            if data:
-                result["items"] = data
-                result["total"] = len(data)
-                result["source"] = "a-stock-data"
-                logger.info(f"✅ 北向资金采集成功 (来源: a-stock-data, {len(data)} 项)")
-                return result
-
-        # 方法2：requests 备选
-        data = self._fetch_from_requests()
+        # 通过 cn-funds-mcp 获取北向资金
+        data = self._fetch_from_cn_funds_mcp()
         if data:
             result["items"] = data
             result["total"] = len(data)
-            result["source"] = "requests"
-            logger.info(f"✅ 北向资金采集成功 (来源: requests, {len(data)} 项)")
+            result["source"] = "cn-funds-mcp"
+            logger.info(f"✅ 北向资金采集成功 (来源: cn-funds-mcp, {len(data)} 项)")
             return result
 
-        # 方法3：从缓存加载
+        # 从缓存加载
         data = self._fetch_from_cache()
         if data:
             result["items"] = data
@@ -99,99 +60,58 @@ class NorthFlowCollector:
         logger.warning("⚠️ 所有北向资金数据源均失败")
         return result
 
-    def _fetch_from_a_stock(self) -> List[Dict]:
-        """使用 a-stock-data 的 eastmoney_datacenter"""
-        if not A_STOCK_AVAILABLE:
-            return []
-
+    def _fetch_from_cn_funds_mcp(self) -> List[Dict]:
+        """通过 cn-funds-mcp 获取北向资金"""
         try:
-            # 使用 eastmoney_datacenter 查询北向资金
-            data = eastmoney_datacenter(
-                report_name="RPT_HSGT_DAILY",
-                columns="TRADE_DATE,HGT_NET_INFLOW,SGT_NET_INFLOW",
-                page_size=2,
-                sort_columns="TRADE_DATE",
-                sort_types="-1"
+            # 调用 cn-funds-mcp 的 get_northbound_capital 工具
+            result = subprocess.run(
+                ['npx', '-y', 'cn-funds-mcp', 'get_northbound_capital'],
+                capture_output=True,
+                text=True,
+                timeout=30
             )
 
-            if not data:
-                logger.debug("东财数据中心返回空")
+            if result.returncode != 0:
+                logger.debug(f"cn-funds-mcp 返回错误: {result.stderr}")
                 return []
 
+            # 尝试解析 JSON
+            try:
+                data = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                # 如果输出不是 JSON，可能是 MCP 协议的格式化输出
+                logger.debug(f"cn-funds-mcp 输出不是 JSON: {result.stdout[:200]}")
+                return []
+
+            # 解析数据（根据 cn-funds-mcp 实际返回格式调整）
             items = []
-            for row in data[:2]:
-                trade_date = row.get("TRADE_DATE", "")
-                hgt = row.get("HGT_NET_INFLOW", 0)
-                sgt = row.get("SGT_NET_INFLOW", 0)
-
-                if hgt == 0 and sgt == 0:
-                    continue
-
+            if isinstance(data, list):
+                for item in data:
+                    items.append({
+                        "date": item.get('date', datetime.now().strftime("%Y-%m-%d")),
+                        "沪股通": round(float(item.get('sh', 0)), 2),
+                        "深股通": round(float(item.get('sz', 0)), 2),
+                        "合计": round(float(item.get('total', 0)), 2)
+                    })
+            elif isinstance(data, dict):
+                # 如果是单个对象
                 items.append({
-                    "date": trade_date[:10] if trade_date else datetime.now().strftime("%Y-%m-%d"),
-                    "沪股通": round(float(hgt), 2),
-                    "深股通": round(float(sgt), 2),
-                    "合计": round(float(hgt + sgt), 2)
+                    "date": data.get('date', datetime.now().strftime("%Y-%m-%d")),
+                    "沪股通": round(float(data.get('sh', 0)), 2),
+                    "深股通": round(float(data.get('sz', 0)), 2),
+                    "合计": round(float(data.get('total', 0)), 2)
                 })
 
             return items
 
-        except Exception as e:
-            logger.debug(f"a-stock-data 采集异常: {e}")
+        except subprocess.TimeoutExpired:
+            logger.debug("cn-funds-mcp 调用超时")
             return []
-
-    def _fetch_from_requests(self) -> List[Dict]:
-        """requests 备选（当 a-stock-data 不可用时）"""
-        if not hasattr(self, 'session') or self.session is None:
+        except FileNotFoundError:
+            logger.debug("npx 未安装，请确保 Node.js 环境已配置")
             return []
-
-        try:
-            url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
-            params = {
-                "reportName": "RPT_HSGT_DAILY",
-                "columns": "TRADE_DATE,HGT_NET_INFLOW,SGT_NET_INFLOW",
-                "pageNumber": "1",
-                "pageSize": "2",
-                "sortColumns": "TRADE_DATE",
-                "sortTypes": "-1",
-                "source": "WEB",
-                "client": "WEB"
-            }
-
-            resp = self.session.get(url, params=params, timeout=10)
-
-            if resp.status_code != 200:
-                logger.debug(f"东财数据中心 HTTP {resp.status_code}")
-                return []
-
-            data = resp.json()
-            if data.get("code") != 0:
-                return []
-
-            rows = data.get("result", {}).get("data", [])
-            if not rows:
-                return []
-
-            items = []
-            for row in rows[:2]:
-                trade_date = row.get("TRADE_DATE", "")
-                hgt = row.get("HGT_NET_INFLOW", 0)
-                sgt = row.get("SGT_NET_INFLOW", 0)
-
-                if hgt == 0 and sgt == 0:
-                    continue
-
-                items.append({
-                    "date": trade_date[:10] if trade_date else datetime.now().strftime("%Y-%m-%d"),
-                    "沪股通": round(float(hgt), 2),
-                    "深股通": round(float(sgt), 2),
-                    "合计": round(float(hgt + sgt), 2)
-                })
-
-            return items
-
         except Exception as e:
-            logger.debug(f"requests 东财采集异常: {e}")
+            logger.debug(f"cn-funds-mcp 调用异常: {e}")
             return []
 
     def _fetch_from_cache(self) -> List[Dict]:
