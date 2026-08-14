@@ -7,7 +7,6 @@ name: Market Data Collection
 on:
   schedule:
     # 北京时间 08:00, 14:00, 20:00, 02:00（UTC+8）
-    # 对应 UTC: 00:00, 06:00, 12:00, 18:00
     - cron: '0 0,6,12,18 * * *'
   workflow_dispatch:
 
@@ -35,7 +34,7 @@ jobs:
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          pip install akshare yfinance pandas_datareader requests pyyaml feedparser beautifulsoup4
+          pip install akshare yfinance pandas-datareader requests pyyaml feedparser beautifulsoup4 a-stock-data
 
       - name: 创建暂存区目录
         run: mkdir -p staging
