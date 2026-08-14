@@ -3,6 +3,7 @@
 """
 公开库 - 北向资金采集模块（cn-funds-mcp 版）
 通过 cn-funds-mcp MCP 服务获取北向资金数据
+无需 API Key，完全免费
 频率：每30分钟
 """
 
@@ -64,43 +65,77 @@ class NorthFlowCollector:
         """通过 cn-funds-mcp 获取北向资金"""
         try:
             # 调用 cn-funds-mcp 的 get_northbound_capital 工具
+            # --yes 自动确认安装，避免交互
             result = subprocess.run(
-                ['npx', '-y', 'cn-funds-mcp', 'get_northbound_capital'],
+                ['npx', '--yes', 'cn-funds-mcp', 'get_northbound_capital'],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=60
             )
 
             if result.returncode != 0:
-                logger.debug(f"cn-funds-mcp 返回错误: {result.stderr}")
+                logger.debug(f"cn-funds-mcp 返回错误码: {result.returncode}")
+                logger.debug(f"stderr: {result.stderr[:200]}")
                 return []
 
             # 尝试解析 JSON
+            output = result.stdout.strip()
+            if not output:
+                logger.debug("cn-funds-mcp 输出为空")
+                return []
+
+            # 尝试解析 JSON（MCP 可能输出多行）
+            data = None
             try:
-                data = json.loads(result.stdout)
+                # 尝试直接解析
+                data = json.loads(output)
             except json.JSONDecodeError:
-                # 如果输出不是 JSON，可能是 MCP 协议的格式化输出
-                logger.debug(f"cn-funds-mcp 输出不是 JSON: {result.stdout[:200]}")
+                # 可能是多行 JSON 或多个 JSON 对象
+                # 尝试找到第一个有效的 JSON 对象
+                lines = output.split('\n')
+                for line in lines:
+                    line = line.strip()
+                    if line.startswith('{') and line.endswith('}'):
+                        try:
+                            data = json.loads(line)
+                            break
+                        except:
+                            continue
+
+            if data is None:
+                logger.debug(f"cn-funds-mcp 输出无法解析: {output[:200]}")
                 return []
 
             # 解析数据（根据 cn-funds-mcp 实际返回格式调整）
             items = []
             if isinstance(data, list):
                 for item in data:
+                    if not isinstance(item, dict):
+                        continue
                     items.append({
                         "date": item.get('date', datetime.now().strftime("%Y-%m-%d")),
-                        "沪股通": round(float(item.get('sh', 0)), 2),
-                        "深股通": round(float(item.get('sz', 0)), 2),
-                        "合计": round(float(item.get('total', 0)), 2)
+                        "沪股通": round(float(item.get('sh', item.get('沪股通', 0))), 2),
+                        "深股通": round(float(item.get('sz', item.get('深股通', 0))), 2),
+                        "合计": round(float(item.get('total', item.get('合计', 0))), 2)
                     })
             elif isinstance(data, dict):
-                # 如果是单个对象
-                items.append({
-                    "date": data.get('date', datetime.now().strftime("%Y-%m-%d")),
-                    "沪股通": round(float(data.get('sh', 0)), 2),
-                    "深股通": round(float(data.get('sz', 0)), 2),
-                    "合计": round(float(data.get('total', 0)), 2)
-                })
+                # 检查是否包含数据列表
+                if 'data' in data and isinstance(data['data'], list):
+                    for item in data['data']:
+                        items.append({
+                            "date": item.get('date', datetime.now().strftime("%Y-%m-%d")),
+                            "沪股通": round(float(item.get('sh', item.get('沪股通', 0))), 2),
+                            "深股通": round(float(item.get('sz', item.get('深股通', 0))), 2),
+                            "合计": round(float(item.get('total', item.get('合计', 0))), 2)
+                        })
+                else:
+                    # 单个对象
+                    items.append({
+                        "date": data.get('date', datetime.now().strftime("%Y-%m-%d")),
+                        "沪股通": round(float(data.get('sh', data.get('沪股通', 0))), 2),
+                        "深股通": round(float(data.get('sz', data.get('深股通', 0))), 2),
+                        "合计": round(float(data.get('total', data.get('合计', 0))), 2)
+                    })
 
             return items
 
@@ -118,6 +153,17 @@ class NorthFlowCollector:
         cache_file = "staging/north_flow_cache.json"
         data = load_json(cache_file)
         if data:
+            # 检查缓存是否过期（30分钟内）
+            cache_time = data.get('timestamp', '')
+            if cache_time:
+                try:
+                    dt = datetime.fromisoformat(cache_time)
+                    age_minutes = (datetime.now() - dt).total_seconds() / 60
+                    if age_minutes > 60:
+                        logger.debug("北向资金缓存已过期")
+                        return []
+                except:
+                    pass
             return data.get('items', [])
         return []
 
