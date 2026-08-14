@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-公开库 - 北向资金采集模块（纯提取私密库函数）
-直接从东方财富数据中心获取北向资金，无需 akshare 中间层
+公开库 - 北向资金采集模块（新浪财经稳定版）
+使用新浪财经 API 获取沪深港通资金流向
 频率：每30分钟
-数据源：东方财富数据中心 → 缓存
+数据源：新浪财经 → 缓存
 """
 
 import sys
 import os
-import json
 import time
-import random
-import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 
@@ -20,15 +17,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils import save_json, load_json, get_timestamp, load_config
 
+import logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# ============================================================
-# ★ 从私密库 a_stock_adapter.py 提取的核心函数 ★
-# ============================================================
 
 try:
     import requests
@@ -36,108 +30,22 @@ try:
 except ImportError:
     HAS_REQUESTS = False
 
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
-
-# 东财防封：全局节流 + 会话复用
-EM_SESSION = None
-if HAS_REQUESTS:
-    EM_SESSION = requests.Session()
-    EM_SESSION.headers.update({"User-Agent": UA})
-    try:
-        from requests.adapters import HTTPAdapter
-        from urllib3.util.retry import Retry
-        _em_adapter = HTTPAdapter(max_retries=Retry(
-            total=2, connect=2, backoff_factor=0.5,
-            status_forcelist=[429, 500, 502, 503, 504], allowed_methods=["GET"]))
-        EM_SESSION.mount("https://", _em_adapter)
-        EM_SESSION.mount("http://", _em_adapter)
-    except Exception:
-        pass
-
-EM_MIN_INTERVAL = 1.0
-_em_last_call = [0.0]
-
-
-def _safe_float(value, default=0.0):
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return default
-
-
-def em_get(url: str, params: dict = None, headers: dict = None,
-           timeout: int = 15, **kwargs) -> Optional[requests.Response]:
-    """东财统一请求入口：自动节流 + 复用session + 默认UA"""
-    if not HAS_REQUESTS or EM_SESSION is None:
-        return None
-    wait = EM_MIN_INTERVAL - (time.time() - _em_last_call[0])
-    if wait > 0:
-        time.sleep(wait + random.uniform(0.1, 0.5))
-    if headers is None:
-        headers = {}
-    headers.setdefault("User-Agent", UA)
-    try:
-        resp = EM_SESSION.get(url, params=params, headers=headers, timeout=timeout, **kwargs)
-        return resp
-    finally:
-        _em_last_call[0] = time.time()
-
-
-def eastmoney_datacenter(report_name: str, columns: str = "ALL",
-                         filter_str: str = "", page_size: int = 50,
-                         sort_columns: str = "", sort_types: str = "-1") -> list:
-    """东财数据中心统一查询"""
-    if not HAS_REQUESTS:
-        return []
-    params = {
-        "reportName": report_name, "columns": columns,
-        "filter": filter_str, "pageNumber": "1", "pageSize": str(page_size),
-        "sortColumns": sort_columns, "sortTypes": sort_types,
-        "source": "WEB", "client": "WEB",
-    }
-    try:
-        r = em_get(DATACENTER_URL, params=params, timeout=15)
-        if r is None:
-            return []
-        d = r.json()
-        if d.get("result") and d["result"].get("data"):
-            return d["result"]["data"]
-    except Exception as e:
-        logger.debug(f"东财数据中心查询失败 ({report_name}): {e}")
-    return []
-
-
-def eastmoney_north_flow_direct() -> Optional[Dict[str, float]]:
-    """通过东方财富数据中心API获取北向资金当日净流入"""
-    try:
-        data = eastmoney_datacenter(
-            report_name="RPT_HSGT_DAILY",
-            columns="TRADE_DATE,HGT_NET_INFLOW,SGT_NET_INFLOW",
-            page_size=2,
-            sort_columns="TRADE_DATE",
-            sort_types="-1"
-        )
-        if data and len(data) > 0:
-            latest = data[0]
-            hgt = _safe_float(latest.get("HGT_NET_INFLOW", 0))
-            sgt = _safe_float(latest.get("SGT_NET_INFLOW", 0))
-            date = str(latest.get("TRADE_DATE", ""))[:10]
-            if hgt != 0 or sgt != 0:
-                return {"hgt": hgt, "sgt": sgt, "net": hgt + sgt, "date": date}
-    except Exception as e:
-        logger.debug(f"东财北向API失败: {e}")
-    return None
-
-
-# ============================================================
-# 采集器主类
-# ============================================================
 
 class NorthFlowCollector:
+    """北向资金采集器（新浪财经稳定版）"""
+
     def __init__(self):
         self.config = load_config()
-        self.today = datetime.now().strftime("%Y-%m-%d")
+        self.session = None
+        if HAS_REQUESTS:
+            self.session = requests.Session()
+            self.session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://finance.sina.com.cn/",
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                "Connection": "keep-alive"
+            })
 
     def collect(self) -> Dict[str, Any]:
         result = {
@@ -147,16 +55,34 @@ class NorthFlowCollector:
             "items": []
         }
 
-        # 1. 直接使用私密库提取的函数
-        data = self._fetch_private_style()
+        # 方法1：新浪财经（首选）
+        data = self._fetch_from_sina()
         if data:
             result["items"] = data
             result["total"] = len(data)
-            result["source"] = "eastmoney_direct"
-            logger.info(f"✅ 北向资金采集成功 (来源: 东财数据中心, {len(data)} 项)")
+            result["source"] = "sina"
+            logger.info(f"✅ 北向资金采集成功 (来源: 新浪财经, {len(data)} 项)")
             return result
 
-        # 2. 从缓存加载
+        # 方法2：东财API（备选）
+        data = self._fetch_from_eastmoney()
+        if data:
+            result["items"] = data
+            result["total"] = len(data)
+            result["source"] = "eastmoney"
+            logger.info(f"✅ 北向资金采集成功 (来源: 东财, {len(data)} 项)")
+            return result
+
+        # 方法3：akshare（备选）
+        data = self._fetch_from_akshare()
+        if data:
+            result["items"] = data
+            result["total"] = len(data)
+            result["source"] = "akshare"
+            logger.info(f"✅ 北向资金采集成功 (来源: akshare, {len(data)} 项)")
+            return result
+
+        # 从缓存加载
         data = self._fetch_from_cache()
         if data:
             result["items"] = data
@@ -168,46 +94,139 @@ class NorthFlowCollector:
         logger.warning("⚠️ 所有北向资金数据源均失败")
         return result
 
-    def _fetch_private_style(self) -> List[Dict]:
-        """使用从私密库提取的 eastmoney_north_flow_direct"""
-        if not HAS_REQUESTS:
+    def _fetch_from_sina(self) -> List[Dict]:
+        """新浪财经北向资金接口"""
+        if not HAS_REQUESTS or not self.session:
             return []
 
-        # 重试一次
-        for attempt in range(2):
-            north_data = eastmoney_north_flow_direct()
-            if north_data:
-                hgt = north_data.get("hgt", 0)
-                sgt = north_data.get("sgt", 0)
-                date = north_data.get("date", self.today)
+        try:
+            # 新浪北向资金 API
+            url = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/GlobalService.getHSG"
+            params = {
+                "page": "1",
+                "num": "5"
+            }
+
+            resp = self.session.get(url, params=params, timeout=10)
+
+            if resp.status_code != 200:
+                logger.debug(f"新浪北向 HTTP {resp.status_code}")
+                return []
+
+            data = resp.json()
+            if not data:
+                logger.debug("新浪北向返回空")
+                return []
+
+            items = []
+            today = datetime.now().strftime("%Y-%m-%d")
+
+            for row in data[:3]:
+                date = row.get('date', today)
+                # 新浪返回的数据字段
+                hgt = row.get('hgt', 0)      # 沪股通
+                sgt = row.get('sgt', 0)      # 深股通
+
                 if hgt == 0 and sgt == 0:
                     continue
-                return [{
-                    "date": date,
-                    "沪股通": round(hgt, 2),
-                    "深股通": round(sgt, 2),
-                    "合计": round(hgt + sgt, 2)
-                }]
-            # 等待0.5秒后重试
-            time.sleep(0.5)
 
-        return []
+                items.append({
+                    "date": date,
+                    "沪股通": round(float(hgt), 2),
+                    "深股通": round(float(sgt), 2),
+                    "合计": round(float(hgt) + float(sgt), 2)
+                })
+
+            return items
+
+        except Exception as e:
+            logger.debug(f"新浪北向采集异常: {e}")
+            return []
+
+    def _fetch_from_eastmoney(self) -> List[Dict]:
+        """东方财富数据中心（备选）"""
+        if not HAS_REQUESTS or not self.session:
+            return []
+
+        try:
+            url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+            params = {
+                "reportName": "RPT_HSGT_DAILY",
+                "columns": "TRADE_DATE,HGT_NET_INFLOW,SGT_NET_INFLOW",
+                "pageNumber": "1",
+                "pageSize": "2",
+                "sortColumns": "TRADE_DATE",
+                "sortTypes": "-1",
+                "source": "WEB",
+                "client": "WEB"
+            }
+
+            resp = self.session.get(url, params=params, timeout=10)
+
+            if resp.status_code != 200:
+                logger.debug(f"东财北向 HTTP {resp.status_code}")
+                return []
+
+            data = resp.json()
+            if data.get("code") != 0:
+                return []
+
+            rows = data.get("result", {}).get("data", [])
+            if not rows:
+                return []
+
+            items = []
+            for row in rows[:2]:
+                trade_date = row.get("TRADE_DATE", "")
+                hgt = row.get("HGT_NET_INFLOW", 0)
+                sgt = row.get("SGT_NET_INFLOW", 0)
+
+                if hgt == 0 and sgt == 0:
+                    continue
+
+                items.append({
+                    "date": trade_date[:10] if trade_date else datetime.now().strftime("%Y-%m-%d"),
+                    "沪股通": round(float(hgt), 2),
+                    "深股通": round(float(sgt), 2),
+                    "合计": round(float(hgt + sgt), 2)
+                })
+
+            return items
+
+        except Exception as e:
+            logger.debug(f"东财北向采集异常: {e}")
+            return []
+
+    def _fetch_from_akshare(self) -> List[Dict]:
+        """akshare 备选"""
+        try:
+            import akshare as ak
+
+            df = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
+            if df is not None and not df.empty:
+                recent = df.tail(2)
+                items = []
+                for _, row in recent.iterrows():
+                    value = row.get('value', 0) / 10000
+                    if value == 0:
+                        continue
+                    items.append({
+                        "date": row.get('date', datetime.now().strftime("%Y-%m-%d")),
+                        "合计": round(float(value), 2)
+                    })
+                return items
+            return []
+
+        except ImportError:
+            return []
+        except Exception as e:
+            logger.debug(f"akshare 北向采集异常: {e}")
+            return []
 
     def _fetch_from_cache(self) -> List[Dict]:
         cache_file = "staging/north_flow_cache.json"
         data = load_json(cache_file)
         if data:
-            # 检查缓存是否过期（60分钟内）
-            cache_time = data.get('timestamp', '')
-            if cache_time:
-                try:
-                    dt = datetime.fromisoformat(cache_time)
-                    age_minutes = (datetime.now() - dt).total_seconds() / 60
-                    if age_minutes > 60:
-                        logger.debug("北向资金缓存已过期")
-                        return []
-                except:
-                    pass
             return data.get('items', [])
         return []
 
