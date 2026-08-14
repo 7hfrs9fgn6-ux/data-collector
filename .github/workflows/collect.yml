@@ -1,4 +1,5 @@
 # data-collector 采集工作流
+# 定时采集 GitHub 公开数据，供 V 系统私密库拉取使用
 
 name: Data Collection
 
@@ -13,6 +14,7 @@ permissions:
 
 env:
   TZ: Asia/Shanghai
+  SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
 
 jobs:
   collect:
@@ -50,8 +52,6 @@ jobs:
 
       - name: 数据签名
         run: python scripts/sign.py
-        env:
-          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
         continue-on-error: true
 
       - name: 安全检查
@@ -70,14 +70,14 @@ jobs:
           echo "📦 暂存区文件列表:"
           ls -la staging/
 
-      - name: 上传 Artifact
+      - name: 上传 Artifact（已签名文件）
         uses: actions/upload-artifact@v4
         with:
           name: collected-data
-          path: staging/*.json
+          path: staging/*_signed.json
           retention-days: 7
 
       - name: 完成通知（日志）
         run: |
           echo "✅ 采集完成时间: $(date '+%Y-%m-%d %H:%M:%S %Z')"
-          echo "📊 暂存区文件数: $(ls -1 staging/*.json 2>/dev/null | wc -l)"
+          echo "📊 暂存区文件数: $(ls -1 staging/*_signed.json 2>/dev/null | wc -l)"
