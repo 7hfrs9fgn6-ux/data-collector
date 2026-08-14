@@ -5,6 +5,7 @@ data-collector 大宗商品采集模块
 采集：原油、黄金、铜等大宗商品价格
 频率：每小时
 数据源：yfinance → akshare → 网页爬虫（兜底）
+★ 2026-08-14 新增：自动HMAC-SHA256签名 ★
 """
 
 import sys
@@ -15,7 +16,7 @@ from typing import Dict, List, Any, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils import save_json, load_json, get_timestamp, load_config
+from utils import save_json, load_json, get_timestamp, load_config, sign_data
 
 import logging
 logging.basicConfig(
@@ -25,10 +26,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def get_signing_key() -> str:
+    """从环境变量获取签名密钥"""
+    key = os.environ.get('SIGNING_KEY', '')
+    if not key:
+        logger.warning("⚠️ SIGNING_KEY 环境变量未设置，跳过签名")
+        return ""
+    return key
+
+
 class CommodityCollector:
     """大宗商品采集器"""
 
-    # 商品配置: (yfinance符号, 显示名称)
     COMMODITIES = [
         ("CL=F", "WTI原油"),
         ("GC=F", "黄金"),
@@ -49,7 +58,8 @@ class CommodityCollector:
             "timestamp": "...",
             "source": "commodity",
             "total": 5,
-            "items": [...]
+            "items": [...],
+            "signature": "..."  ← 自动添加
         }
         """
         result = {
@@ -66,6 +76,12 @@ class CommodityCollector:
             result["total"] = len(data)
             result["source"] = "yfinance"
             logger.info(f"✅ 大宗商品采集成功 (来源: yfinance, {len(data)} 项)")
+            # ★ 添加签名
+            key = get_signing_key()
+            if key:
+                result['signature'] = sign_data(result, key)
+            else:
+                result['signature'] = None
             return result
 
         # 尝试 akshare
@@ -75,6 +91,11 @@ class CommodityCollector:
             result["total"] = len(data)
             result["source"] = "akshare"
             logger.info(f"✅ 大宗商品采集成功 (来源: akshare, {len(data)} 项)")
+            key = get_signing_key()
+            if key:
+                result['signature'] = sign_data(result, key)
+            else:
+                result['signature'] = None
             return result
 
         # 从缓存加载
@@ -84,7 +105,7 @@ class CommodityCollector:
             result["total"] = len(data)
             result["source"] = "cache"
             logger.info(f"✅ 大宗商品采集成功 (来源: 缓存, {len(data)} 项)")
-            return result
+            # 缓存数据可能已包含签名，不重复添加
 
         logger.warning("⚠️ 所有大宗商品数据源均失败")
         return result
@@ -107,7 +128,6 @@ class CommodityCollector:
                     if price <= 0:
                         continue
 
-                    # 计算涨跌幅
                     if len(hist) >= 2:
                         prev_close = float(hist.iloc[-2]['Close'])
                         change_pct = ((price - prev_close) / prev_close * 100) if prev_close > 0 else 0
@@ -141,7 +161,6 @@ class CommodityCollector:
 
             items = []
 
-            # 获取原油
             try:
                 oil = ak.futures_main_sina(symbol="SC")
                 if oil is not None and not oil.empty:
@@ -156,7 +175,6 @@ class CommodityCollector:
             except Exception as e:
                 logger.debug(f"原油采集失败: {e}")
 
-            # 获取黄金
             try:
                 gold = ak.futures_main_sina(symbol="AU")
                 if gold is not None and not gold.empty:
@@ -197,10 +215,10 @@ def collect_commodity() -> Dict[str, Any]:
     filepath = f"staging/commodity_{timestamp}.json"
     save_json(result, filepath)
 
-    # 保存缓存
     save_json(result, "staging/commodity_cache.json")
 
     logger.info(f"📊 大宗商品: {result['total']} 项")
+    logger.info(f"🔐 签名状态: {'✅ 已签名' if result.get('signature') else '⚠️ 未签名'}")
     return result
 
 
