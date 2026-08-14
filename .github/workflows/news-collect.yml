@@ -87,11 +87,11 @@ jobs:
           python scripts/cleanup.py --days 7
         continue-on-error: true
 
-      - name: 上传新闻数据包
+      - name: 上传新闻数据包（已签名）
         uses: actions/upload-artifact@v4
         with:
           name: news-data
-          path: staging/news_package_*.json
+          path: staging/news_package_signed_*.json
           retention-days: 7
 
       - name: 完成日志
