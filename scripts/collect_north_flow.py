@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-公开库 - 北向资金采集模块（hhxg-market 风格）
-零依赖，仅使用 Python 标准库 + requests
-数据来源：恢恢量化公开 API
+公开库 - 北向资金采集模块（使用 a-stock-data 库）
+从东方财富数据中心获取沪深港通资金流向
 频率：每30分钟
+数据源：a-stock-data → 缓存
 """
 
 import sys
 import os
-import json
-import urllib.request
-import urllib.error
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 
@@ -26,15 +24,41 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ============================================================
+# 尝试导入 a-stock-data 库
+# ============================================================
+try:
+    from a_stock_adapter import eastmoney_datacenter
+    A_STOCK_AVAILABLE = True
+    logger.info("✅ a-stock-data 已加载（通过 a_stock_adapter）")
+except ImportError:
+    try:
+        from a_stock_data import eastmoney_datacenter
+        A_STOCK_AVAILABLE = True
+        logger.info("✅ a-stock-data 已加载（通过 a_stock_data）")
+    except ImportError:
+        A_STOCK_AVAILABLE = False
+        logger.warning("⚠️ a-stock-data 不可用，将使用 requests 备选")
+
 
 class NorthFlowCollector:
-    """北向资金采集器（纯标准库，零依赖）"""
-
-    # 恢恢量化北向资金 API（公开免费，无需 Key）
-    NORTHBOUND_API = "https://hhxg.top/api/northbound"
+    """北向资金采集器（a-stock-data）"""
 
     def __init__(self):
         self.config = load_config()
+        self.session = None
+        if not A_STOCK_AVAILABLE:
+            try:
+                import requests
+                self.session = requests.Session()
+                self.session.headers.update({
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Referer": "https://data.eastmoney.com/",
+                    "Accept": "application/json"
+                })
+                HAS_REQUESTS = True
+            except ImportError:
+                HAS_REQUESTS = False
 
     def collect(self) -> Dict[str, Any]:
         result = {
@@ -44,16 +68,26 @@ class NorthFlowCollector:
             "items": []
         }
 
-        # 方法1：恢恢量化 API（推荐）
-        data = self._fetch_from_hhxg()
+        # 方法1：使用 a-stock-data（优先）
+        if A_STOCK_AVAILABLE:
+            data = self._fetch_from_a_stock()
+            if data:
+                result["items"] = data
+                result["total"] = len(data)
+                result["source"] = "a-stock-data"
+                logger.info(f"✅ 北向资金采集成功 (来源: a-stock-data, {len(data)} 项)")
+                return result
+
+        # 方法2：requests 备选
+        data = self._fetch_from_requests()
         if data:
             result["items"] = data
             result["total"] = len(data)
-            result["source"] = "hhxg"
-            logger.info(f"✅ 北向资金采集成功 (来源: 恢恢量化, {len(data)} 项)")
+            result["source"] = "requests"
+            logger.info(f"✅ 北向资金采集成功 (来源: requests, {len(data)} 项)")
             return result
 
-        # 方法2：从缓存加载
+        # 方法3：从缓存加载
         data = self._fetch_from_cache()
         if data:
             result["items"] = data
@@ -65,59 +99,99 @@ class NorthFlowCollector:
         logger.warning("⚠️ 所有北向资金数据源均失败")
         return result
 
-    def _fetch_from_hhxg(self) -> List[Dict]:
-        """
-        从恢恢量化 API 获取北向资金数据
-        完全免费，无需 API Key，无需安装任何包
-        """
+    def _fetch_from_a_stock(self) -> List[Dict]:
+        """使用 a-stock-data 的 eastmoney_datacenter"""
+        if not A_STOCK_AVAILABLE:
+            return []
+
         try:
-            req = urllib.request.Request(
-                self.NORTHBOUND_API,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Accept": "application/json"
-                }
+            # 使用 eastmoney_datacenter 查询北向资金
+            data = eastmoney_datacenter(
+                report_name="RPT_HSGT_DAILY",
+                columns="TRADE_DATE,HGT_NET_INFLOW,SGT_NET_INFLOW",
+                page_size=2,
+                sort_columns="TRADE_DATE",
+                sort_types="-1"
             )
 
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                if resp.status != 200:
-                    logger.debug(f"恢恢量化 API HTTP {resp.status}")
-                    return []
+            if not data:
+                logger.debug("东财数据中心返回空")
+                return []
 
-                data = json.loads(resp.read().decode('utf-8'))
+            items = []
+            for row in data[:2]:
+                trade_date = row.get("TRADE_DATE", "")
+                hgt = row.get("HGT_NET_INFLOW", 0)
+                sgt = row.get("SGT_NET_INFLOW", 0)
 
-                # 解析返回数据
-                # 预期格式: {"code": 0, "data": {"northbound": [...], "southbound": [...]}}
-                if data.get('code') != 0:
-                    logger.debug(f"恢恢量化 API 返回错误: {data.get('msg')}")
-                    return []
+                if hgt == 0 and sgt == 0:
+                    continue
 
-                api_data = data.get('data', {})
-                northbound = api_data.get('northbound', [])
+                items.append({
+                    "date": trade_date[:10] if trade_date else datetime.now().strftime("%Y-%m-%d"),
+                    "沪股通": round(float(hgt), 2),
+                    "深股通": round(float(sgt), 2),
+                    "合计": round(float(hgt + sgt), 2)
+                })
 
-                if not northbound:
-                    logger.debug("恢恢量化 API 返回空数据")
-                    return []
+            return items
 
-                items = []
-                for item in northbound[:7]:  # 最近7天
-                    items.append({
-                        "date": item.get('date', ''),
-                        "沪股通": round(float(item.get('sh', 0)), 2),
-                        "深股通": round(float(item.get('sz', 0)), 2),
-                        "合计": round(float(item.get('total', 0)), 2)
-                    })
-
-                return items
-
-        except urllib.error.URLError as e:
-            logger.debug(f"恢恢量化 API 网络错误: {e}")
-            return []
-        except json.JSONDecodeError as e:
-            logger.debug(f"恢恢量化 API JSON 解析失败: {e}")
-            return []
         except Exception as e:
-            logger.debug(f"恢恢量化 API 异常: {e}")
+            logger.debug(f"a-stock-data 采集异常: {e}")
+            return []
+
+    def _fetch_from_requests(self) -> List[Dict]:
+        """requests 备选（当 a-stock-data 不可用时）"""
+        if not hasattr(self, 'session') or self.session is None:
+            return []
+
+        try:
+            url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+            params = {
+                "reportName": "RPT_HSGT_DAILY",
+                "columns": "TRADE_DATE,HGT_NET_INFLOW,SGT_NET_INFLOW",
+                "pageNumber": "1",
+                "pageSize": "2",
+                "sortColumns": "TRADE_DATE",
+                "sortTypes": "-1",
+                "source": "WEB",
+                "client": "WEB"
+            }
+
+            resp = self.session.get(url, params=params, timeout=10)
+
+            if resp.status_code != 200:
+                logger.debug(f"东财数据中心 HTTP {resp.status_code}")
+                return []
+
+            data = resp.json()
+            if data.get("code") != 0:
+                return []
+
+            rows = data.get("result", {}).get("data", [])
+            if not rows:
+                return []
+
+            items = []
+            for row in rows[:2]:
+                trade_date = row.get("TRADE_DATE", "")
+                hgt = row.get("HGT_NET_INFLOW", 0)
+                sgt = row.get("SGT_NET_INFLOW", 0)
+
+                if hgt == 0 and sgt == 0:
+                    continue
+
+                items.append({
+                    "date": trade_date[:10] if trade_date else datetime.now().strftime("%Y-%m-%d"),
+                    "沪股通": round(float(hgt), 2),
+                    "深股通": round(float(sgt), 2),
+                    "合计": round(float(hgt + sgt), 2)
+                })
+
+            return items
+
+        except Exception as e:
+            logger.debug(f"requests 东财采集异常: {e}")
             return []
 
     def _fetch_from_cache(self) -> List[Dict]:
