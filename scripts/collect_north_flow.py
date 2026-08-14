@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-公开库 - 北向资金采集模块（cn-funds-mcp 版）
-通过 cn-funds-mcp MCP 服务获取北向资金数据
-无需 API Key，完全免费
+公开库 - 北向资金采集模块
+从东方财富数据中心获取沪深港通资金流向
 频率：每30分钟
+数据源：东方财富数据中心 → akshare → 缓存
 """
 
 import sys
 import os
-import json
-import subprocess
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,12 +24,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
+
 
 class NorthFlowCollector:
-    """北向资金采集器（cn-funds-mcp）"""
+    """北向资金采集器（基于 a_stock_adapter.py 的 eastmoney_datacenter 逻辑）"""
 
     def __init__(self):
         self.config = load_config()
+        self.session = None
+        if HAS_REQUESTS:
+            self.session = requests.Session()
+            self.session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://data.eastmoney.com/",
+                "Accept": "application/json"
+            })
 
     def collect(self) -> Dict[str, Any]:
         result = {
@@ -40,13 +53,22 @@ class NorthFlowCollector:
             "items": []
         }
 
-        # 通过 cn-funds-mcp 获取北向资金
-        data = self._fetch_from_cn_funds_mcp()
+        # 方法1：东方财富数据中心
+        data = self._fetch_from_eastmoney()
         if data:
             result["items"] = data
             result["total"] = len(data)
-            result["source"] = "cn-funds-mcp"
-            logger.info(f"✅ 北向资金采集成功 (来源: cn-funds-mcp, {len(data)} 项)")
+            result["source"] = "eastmoney"
+            logger.info(f"✅ 北向资金采集成功 (来源: 东财数据中心, {len(data)} 项)")
+            return result
+
+        # 方法2：akshare
+        data = self._fetch_from_akshare()
+        if data:
+            result["items"] = data
+            result["total"] = len(data)
+            result["source"] = "akshare"
+            logger.info(f"✅ 北向资金采集成功 (来源: akshare, {len(data)} 项)")
             return result
 
         # 从缓存加载
@@ -61,109 +83,129 @@ class NorthFlowCollector:
         logger.warning("⚠️ 所有北向资金数据源均失败")
         return result
 
-    def _fetch_from_cn_funds_mcp(self) -> List[Dict]:
-        """通过 cn-funds-mcp 获取北向资金"""
+    def _fetch_from_eastmoney(self) -> List[Dict]:
+        """东方财富数据中心（基于 a_stock_adapter.py 的 eastmoney_datacenter）"""
+        if not HAS_REQUESTS or not self.session:
+            return []
+
         try:
-            # 调用 cn-funds-mcp 的 get_northbound_capital 工具
-            # --yes 自动确认安装，避免交互
-            result = subprocess.run(
-                ['npx', '--yes', 'cn-funds-mcp', 'get_northbound_capital'],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
+            url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+            params = {
+                "reportName": "RPT_HSGT_DAILY",
+                "columns": "TRADE_DATE,HGT_NET_INFLOW,SGT_NET_INFLOW",
+                "pageNumber": "1",
+                "pageSize": "2",
+                "sortColumns": "TRADE_DATE",
+                "sortTypes": "-1",
+                "source": "WEB",
+                "client": "WEB"
+            }
 
-            if result.returncode != 0:
-                logger.debug(f"cn-funds-mcp 返回错误码: {result.returncode}")
-                logger.debug(f"stderr: {result.stderr[:200]}")
+            resp = self.session.get(url, params=params, timeout=15)
+
+            if resp.status_code != 200:
+                logger.debug(f"东财数据中心 HTTP {resp.status_code}")
                 return []
 
-            # 尝试解析 JSON
-            output = result.stdout.strip()
-            if not output:
-                logger.debug("cn-funds-mcp 输出为空")
+            data = resp.json()
+            if data.get("code") != 0:
+                logger.debug(f"东财数据中心返回错误: {data.get('msg')}")
                 return []
 
-            # 尝试解析 JSON（MCP 可能输出多行）
-            data = None
-            try:
-                # 尝试直接解析
-                data = json.loads(output)
-            except json.JSONDecodeError:
-                # 可能是多行 JSON 或多个 JSON 对象
-                # 尝试找到第一个有效的 JSON 对象
-                lines = output.split('\n')
-                for line in lines:
-                    line = line.strip()
-                    if line.startswith('{') and line.endswith('}'):
-                        try:
-                            data = json.loads(line)
-                            break
-                        except:
-                            continue
-
-            if data is None:
-                logger.debug(f"cn-funds-mcp 输出无法解析: {output[:200]}")
+            rows = data.get("result", {}).get("data", [])
+            if not rows:
                 return []
 
-            # 解析数据（根据 cn-funds-mcp 实际返回格式调整）
             items = []
-            if isinstance(data, list):
-                for item in data:
-                    if not isinstance(item, dict):
-                        continue
-                    items.append({
-                        "date": item.get('date', datetime.now().strftime("%Y-%m-%d")),
-                        "沪股通": round(float(item.get('sh', item.get('沪股通', 0))), 2),
-                        "深股通": round(float(item.get('sz', item.get('深股通', 0))), 2),
-                        "合计": round(float(item.get('total', item.get('合计', 0))), 2)
-                    })
-            elif isinstance(data, dict):
-                # 检查是否包含数据列表
-                if 'data' in data and isinstance(data['data'], list):
-                    for item in data['data']:
-                        items.append({
-                            "date": item.get('date', datetime.now().strftime("%Y-%m-%d")),
-                            "沪股通": round(float(item.get('sh', item.get('沪股通', 0))), 2),
-                            "深股通": round(float(item.get('sz', item.get('深股通', 0))), 2),
-                            "合计": round(float(item.get('total', item.get('合计', 0))), 2)
-                        })
-                else:
-                    # 单个对象
-                    items.append({
-                        "date": data.get('date', datetime.now().strftime("%Y-%m-%d")),
-                        "沪股通": round(float(data.get('sh', data.get('沪股通', 0))), 2),
-                        "深股通": round(float(data.get('sz', data.get('深股通', 0))), 2),
-                        "合计": round(float(data.get('total', data.get('合计', 0))), 2)
-                    })
+            for row in rows[:2]:
+                trade_date = row.get("TRADE_DATE", "")
+                hgt = row.get("HGT_NET_INFLOW", 0)
+                sgt = row.get("SGT_NET_INFLOW", 0)
+
+                if hgt == 0 and sgt == 0:
+                    continue
+
+                items.append({
+                    "date": trade_date[:10] if trade_date else datetime.now().strftime("%Y-%m-%d"),
+                    "沪股通": round(float(hgt), 2),
+                    "深股通": round(float(sgt), 2),
+                    "合计": round(float(hgt + sgt), 2)
+                })
 
             return items
 
-        except subprocess.TimeoutExpired:
-            logger.debug("cn-funds-mcp 调用超时")
+        except Exception as e:
+            logger.debug(f"东财数据中心采集异常: {e}")
             return []
-        except FileNotFoundError:
-            logger.debug("npx 未安装，请确保 Node.js 环境已配置")
+
+    def _fetch_from_akshare(self) -> List[Dict]:
+        """akshare 备选"""
+        try:
+            import akshare as ak
+
+            # 方法1：沪股通 + 深股通分别获取
+            try:
+                hgt_df = ak.stock_hsgt_north_net_flow_in_em(symbol="沪股通")
+                sgt_df = ak.stock_hsgt_north_net_flow_in_em(symbol="深股通")
+
+                if hgt_df is not None and not hgt_df.empty and sgt_df is not None and not sgt_df.empty:
+                    hgt_recent = hgt_df.tail(2)
+                    sgt_recent = sgt_df.tail(2)
+
+                    hgt_dict = {row.get('date', ''): row for _, row in hgt_recent.iterrows()}
+                    sgt_dict = {row.get('date', ''): row for _, row in sgt_recent.iterrows()}
+
+                    items = []
+                    for date in sorted(set(hgt_dict.keys()) | set(sgt_dict.keys()), reverse=True)[:2]:
+                        hgt_row = hgt_dict.get(date)
+                        sgt_row = sgt_dict.get(date)
+                        hgt_val = float(hgt_row.get('value', 0)) / 10000 if hgt_row else 0
+                        sgt_val = float(sgt_row.get('value', 0)) / 10000 if sgt_row else 0
+
+                        if hgt_val == 0 and sgt_val == 0:
+                            continue
+
+                        items.append({
+                            "date": date,
+                            "沪股通": round(hgt_val, 2),
+                            "深股通": round(sgt_val, 2),
+                            "合计": round(hgt_val + sgt_val, 2)
+                        })
+                    return items
+            except Exception as e:
+                logger.debug(f"akshare 沪深股通接口失败: {e}")
+
+            # 方法2：北上总额
+            try:
+                df = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
+                if df is not None and not df.empty:
+                    recent = df.tail(2)
+                    items = []
+                    for _, row in recent.iterrows():
+                        value = row.get('value', 0) / 10000
+                        if value == 0:
+                            continue
+                        items.append({
+                            "date": row.get('date', datetime.now().strftime("%Y-%m-%d")),
+                            "合计": round(float(value), 2)
+                        })
+                    return items
+            except Exception as e:
+                logger.debug(f"akshare 北上总额接口失败: {e}")
+
+            return []
+
+        except ImportError:
+            logger.debug("akshare 未安装")
             return []
         except Exception as e:
-            logger.debug(f"cn-funds-mcp 调用异常: {e}")
+            logger.debug(f"akshare 北向资金采集异常: {e}")
             return []
 
     def _fetch_from_cache(self) -> List[Dict]:
         cache_file = "staging/north_flow_cache.json"
         data = load_json(cache_file)
         if data:
-            # 检查缓存是否过期（30分钟内）
-            cache_time = data.get('timestamp', '')
-            if cache_time:
-                try:
-                    dt = datetime.fromisoformat(cache_time)
-                    age_minutes = (datetime.now() - dt).total_seconds() / 60
-                    if age_minutes > 60:
-                        logger.debug("北向资金缓存已过期")
-                        return []
-                except:
-                    pass
             return data.get('items', [])
         return []
 
