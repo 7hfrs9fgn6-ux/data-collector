@@ -1,12 +1,14 @@
 # data-collector 市场数据采集工作流
 # 采集：大宗商品、宏观、美股、板块回撤、北向资金、汇率
+# 频率：每小时
 
 name: Market Data Collection
 
 on:
   schedule:
-    # 每小时采集（大宗商品、板块回撤）
-    - cron: '0 * * * *'
+    # 北京时间 08:00, 14:00, 20:00, 02:00（UTC+8）
+    # 对应 UTC: 00:00, 06:00, 12:00, 18:00
+    - cron: '0 0,6,12,18 * * *'
   workflow_dispatch:
 
 permissions:
@@ -33,7 +35,7 @@ jobs:
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          pip install akshare yfinance pandas_datareader requests pyyaml
+          pip install akshare yfinance pandas_datareader requests pyyaml feedparser beautifulsoup4
 
       - name: 创建暂存区目录
         run: mkdir -p staging
@@ -68,8 +70,8 @@ jobs:
 
       - name: 打印暂存区状态
         run: |
-          echo "📦 暂存区文件列表:"
-          ls -la staging/ | grep -E "commodity|sector|north_flow|macro|us_stock|forex"
+          echo "📦 市场数据文件列表:"
+          ls -la staging/ | grep -E "commodity|sector|north_flow|macro|us_stock|forex" || echo "   (暂无市场数据文件)"
 
       - name: 上传 Artifact
         uses: actions/upload-artifact@v4
