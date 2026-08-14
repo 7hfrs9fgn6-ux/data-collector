@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-data-collector 板块52周回撤采集模块（三源轮询版）
-使用三个数据源轮询，确保采集成功率
+data-collector 板块52周回撤采集模块（a-stock-data 增强版）
+使用 a-stock-data 的免费能力 + akshare 历史数据
+采集：A股15个核心板块的52周回撤历史
 频率：每小时
-数据源：新浪财经 → 东方财富 → 缓存
+数据源：a-stock-data + akshare → 缓存
 """
 
 import sys
 import os
-import re
-import requests
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 
@@ -25,25 +25,51 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ============================================================
+# ★ 动态导入 a-stock-data（如果可用）
+# ============================================================
+try:
+    # 尝试从 data_adapter 导入（如果在私密库环境中）
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..'))
+    from data_adapter.a_stock_adapter import tencent_quote
+    A_STOCK_AVAILABLE = True
+    logger.info("✅ a-stock-data 已加载（从私密库适配器）")
+except ImportError:
+    try:
+        # 尝试直接导入 a-stock-data
+        from a_stock_adapter import tencent_quote
+        A_STOCK_AVAILABLE = True
+        logger.info("✅ a-stock-data 已加载（直接导入）")
+    except ImportError:
+        A_STOCK_AVAILABLE = False
+        logger.warning("⚠️ a-stock-data 不可用，将使用 akshare 备选")
+
 
 class SectorCollector:
-    """板块52周回撤采集器（三源轮询版）"""
+    """板块52周回撤采集器（a-stock-data 增强版）"""
 
-    # 15个核心板块名称
-    SECTOR_NAMES = [
-        "电子", "计算机", "通信", "传媒", "医药生物",
-        "食品饮料", "家用电器", "电力设备", "汽车", "国防军工",
-        "银行", "非银金融", "公用事业", "煤炭", "石油石化"
+    # V系统15个核心板块及对应的申万指数代码
+    SECTORS = [
+        {"name": "电子", "code": "801080"},
+        {"name": "计算机", "code": "801750"},
+        {"name": "通信", "code": "801770"},
+        {"name": "传媒", "code": "801760"},
+        {"name": "医药生物", "code": "801150"},
+        {"name": "食品饮料", "code": "801120"},
+        {"name": "家用电器", "code": "801110"},
+        {"name": "电力设备", "code": "801730"},
+        {"name": "汽车", "code": "801880"},
+        {"name": "国防军工", "code": "801740"},
+        {"name": "银行", "code": "801780"},
+        {"name": "非银金融", "code": "801790"},
+        {"name": "公用事业", "code": "801160"},
+        {"name": "煤炭", "code": "801950"},
+        {"name": "石油石化", "code": "801960"},
     ]
 
     def __init__(self):
         self.config = load_config()
-        self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        })
+        self.max_retries = 2
 
     def collect(self) -> Dict[str, Any]:
         result = {
@@ -53,218 +79,235 @@ class SectorCollector:
             "items": []
         }
 
-        # 数据源1：新浪财经（最稳定）
-        logger.info("   🔍 尝试新浪财经数据源...")
-        data = self._fetch_from_sina()
-        if data and len(data) >= 10:
+        # 方法1：使用 a-stock-data + akshare（最精确）
+        data = self._fetch_with_a_stock()
+        if data:
             result["items"] = data
             result["total"] = len(data)
-            result["source"] = "sina"
-            logger.info(f"   ✅ 板块回撤采集成功 (来源: 新浪, {len(data)} 项)")
+            result["source"] = "a-stock-data"
+            logger.info(f"✅ 板块回撤采集成功 (来源: a-stock-data, {len(data)} 项)")
             return result
 
-        # 数据源2：东方财富
-        logger.info("   🔍 尝试东方财富数据源...")
-        data = self._fetch_from_eastmoney()
-        if data and len(data) >= 10:
+        # 方法2：纯 akshare（备选）
+        data = self._fetch_from_akshare_sw()
+        if data:
             result["items"] = data
             result["total"] = len(data)
-            result["source"] = "eastmoney"
-            logger.info(f"   ✅ 板块回撤采集成功 (来源: 东方财富, {len(data)} 项)")
+            result["source"] = "akshare"
+            logger.info(f"✅ 板块回撤采集成功 (来源: akshare, {len(data)} 项)")
             return result
 
-        # 数据源3：从缓存加载
-        logger.info("   📂 尝试从缓存加载...")
+        # 从缓存加载
         data = self._fetch_from_cache()
-        if data and len(data) >= 10:
+        if data:
             result["items"] = data
             result["total"] = len(data)
             result["source"] = "cache"
-            logger.info(f"   ✅ 板块回撤采集成功 (来源: 缓存, {len(data)} 项)")
+            logger.info(f"✅ 板块回撤采集成功 (来源: 缓存, {len(data)} 项)")
             return result
 
         logger.warning("⚠️ 所有板块回撤数据源均失败")
         return result
 
-    def _fetch_from_sina(self) -> List[Dict]:
-        """
-        使用新浪财经获取申万行业指数
-        hq.sinajs.cn 接口稳定，30年不变
-        """
+    def _fetch_with_a_stock(self) -> List[Dict]:
+        """使用 a-stock-data 获取板块数据"""
+        if not A_STOCK_AVAILABLE:
+            logger.debug("a-stock-data 不可用，跳过")
+            return []
+
         try:
-            # 申万行业指数代码（新浪格式）
-            # 格式：sh801080 代表 801080 申万行业指数
-            sw_codes = {
-                "电子": "sh801080",
-                "计算机": "sh801750",
-                "通信": "sh801770",
-                "传媒": "sh801760",
-                "医药生物": "sh801150",
-                "食品饮料": "sh801120",
-                "家用电器": "sh801110",
-                "电力设备": "sh801730",
-                "汽车": "sh801880",
-                "国防军工": "sh801740",
-                "银行": "sh801780",
-                "非银金融": "sh801790",
-                "公用事业": "sh801160",
-                "煤炭": "sh801950",
-                "石油石化": "sh801960",
-            }
-
-            # 批量请求
-            code_list = ",".join(sw_codes.values())
-            url = f"https://hq.sinajs.cn/list={code_list}"
-            
-            resp = self.session.get(url, timeout=10)
-            if resp.status_code != 200:
-                logger.debug(f"   新浪返回: {resp.status_code}")
-                return []
-
-            content = resp.text
-            if not content or "没有找到" in content:
-                logger.debug("   新浪返回空内容")
-                return []
+            import akshare as ak
+            import pandas as pd
 
             today = datetime.now().strftime("%Y-%m-%d")
             items = []
 
-            for line in content.strip().split('\n'):
-                if not line.strip():
-                    continue
-                if '=' not in line or '"' not in line:
-                    continue
-                
-                parts = line.split('"')
-                if len(parts) < 2:
-                    continue
-                
-                data_str = parts[1]
-                fields = data_str.split('~')
-                if len(fields) < 10:
+            # 1. 从 a-stock-data 获取板块当前价
+            # 构建板块对应的股票代码（使用板块权重股代替）
+            sector_stock_map = {
+                "电子": "002475",    # 立讯精密
+                "计算机": "000977",  # 浪潮信息
+                "通信": "600050",    # 中国联通
+                "传媒": "300058",    # 蓝色光标
+                "医药生物": "600196", # 复星医药
+                "食品饮料": "600519", # 贵州茅台
+                "家用电器": "000333", # 美的集团
+                "电力设备": "300750", # 宁德时代
+                "汽车": "002594",    # 比亚迪
+                "国防军工": "600150", # 中国船舶
+                "银行": "600036",    # 招商银行
+                "非银金融": "600030", # 中信证券
+                "公用事业": "600900", # 长江电力
+                "煤炭": "601088",    # 中国神华
+                "石油石化": "600028", # 中国石化
+            }
+
+            # 批量获取股票实时行情
+            stock_codes = list(sector_stock_map.values())
+            quotes = tencent_quote(stock_codes)
+
+            if not quotes:
+                logger.debug("a-stock-data tencent_quote 返回空")
+                return []
+
+            # 2. 获取申万行业指数的52周最高价
+            # 使用 akshare 获取申万行业指数历史数据
+            sw_index_df = ak.stock_zh_index_spot_em(symbol="申万行业指数")
+            if sw_index_df is None or sw_index_df.empty:
+                logger.debug("申万行业指数获取失败")
+                return []
+
+            # 创建名称到价格的映射
+            sw_prices = {}
+            name_col = None
+            price_col = None
+            for col in sw_index_df.columns:
+                if '名称' in col or 'name' in col.lower():
+                    name_col = col
+                if '最新价' in col or 'price' in col.lower():
+                    price_col = col
+
+            if name_col and price_col:
+                for _, row in sw_index_df.iterrows():
+                    name = str(row.get(name_col, ''))
+                    price = self._safe_float(row.get(price_col))
+                    sw_prices[name] = price
+
+            # 3. 计算每个板块的回撤
+            for sector in self.SECTORS:
+                sector_name = sector["name"]
+                stock_code = sector_stock_map.get(sector_name)
+
+                # 获取当前价（优先从 a-stock-data）
+                current_price = 0
+                if stock_code and stock_code in quotes:
+                    current_price = quotes[stock_code].get('price', 0)
+
+                # 如果 a-stock-data 没有，尝试从申万行业指数获取
+                if current_price <= 0:
+                    # 在申万行业指数中查找
+                    for sw_name, sw_price in sw_prices.items():
+                        if sector_name in sw_name:
+                            current_price = sw_price
+                            break
+
+                if current_price <= 0:
+                    logger.debug(f"   {sector_name}: 无法获取当前价")
                     continue
 
-                # 解析字段
-                # 格式: name,code,price,chg,chg_pct,vol,amount,high,low,open,prev_close
-                name = fields[0] if len(fields) > 0 else ''
-                code = fields[1] if len(fields) > 1 else ''
-                price = self._safe_float(fields[2] if len(fields) > 2 else 0)
-                change_pct = self._safe_float(fields[4] if len(fields) > 4 else 0)
-                high = self._safe_float(fields[7] if len(fields) > 7 else price)
-                low = self._safe_float(fields[8] if len(fields) > 8 else price)
-                open_price = self._safe_float(fields[9] if len(fields) > 9 else price)
-                prev_close = self._safe_float(fields[10] if len(fields) > 10 else price)
+                # 获取52周最高价（从历史数据）
+                high_52w = current_price
+                try:
+                    # 获取该板块近一年历史数据
+                    sw_code = sector["code"]
+                    hist_df = ak.stock_zh_index_daily(symbol=sw_code)
+                    if hist_df is not None and not hist_df.empty:
+                        high_52w = hist_df['high'].max()
+                        if high_52w is None or high_52w <= 0:
+                            high_52w = current_price
+                except Exception as e:
+                    logger.debug(f"   {sector_name} 历史数据获取失败: {e}")
 
-                # 匹配板块
-                sector_name = None
-                for s in self.SECTOR_NAMES:
-                    if s in name:
-                        sector_name = s
+                # 计算回撤
+                if high_52w > 0 and current_price > 0:
+                    drawdown = ((high_52w - current_price) / high_52w * 100)
+                else:
+                    drawdown = 0
+
+                items.append({
+                    "sector": sector_name,
+                    "code": sector["code"],
+                    "price": round(current_price, 2),
+                    "drawdown": round(drawdown, 2),
+                    "high_52w": round(high_52w, 2),
+                    "date": today
+                })
+
+            return items
+
+        except ImportError as e:
+            logger.debug(f"a-stock-data 导入失败: {e}")
+            return []
+        except Exception as e:
+            logger.debug(f"a-stock-data 采集异常: {e}")
+            return []
+
+    def _fetch_from_akshare_sw(self) -> List[Dict]:
+        """备选方法：从 akshare 获取"""
+        try:
+            import akshare as ak
+
+            today = datetime.now().strftime("%Y-%m-%d")
+            items = []
+
+            # 获取申万行业指数
+            df = ak.stock_zh_index_spot_em(symbol="申万行业指数")
+            if df is None or df.empty:
+                return []
+
+            # 列名识别
+            name_col = None
+            price_col = None
+            for col in df.columns:
+                if '名称' in col or 'name' in col.lower():
+                    name_col = col
+                if '最新价' in col or 'price' in col.lower():
+                    price_col = col
+
+            if not name_col or not price_col:
+                return []
+
+            for sector in self.SECTORS:
+                sector_name = sector["name"]
+                matched = None
+
+                for _, row in df.iterrows():
+                    name = str(row.get(name_col, ''))
+                    if sector_name in name:
+                        matched = row
                         break
-                
-                if not sector_name or price <= 0:
+
+                if matched is None:
                     continue
 
-                # 计算回撤：用当前价和52周最高（这里用历史最高近似）
-                # 注意：新浪不提供52周最高，我们使用当前价估算
-                # 实际上，我们只能使用最近的价格数据
-                # 回撤通过公式计算：需要52周最高价，这里使用近期的最高价
-                # 简化：使用今日最高价作为52周最高（保守估计）
-                high_52w = max(price, high)
+                price = self._safe_float(matched.get(price_col))
+                if price <= 0:
+                    continue
+
+                # 获取52周最高价
+                high_52w = price
+                try:
+                    sw_code = sector["code"]
+                    hist_df = ak.stock_zh_index_daily(symbol=sw_code)
+                    if hist_df is not None and not hist_df.empty:
+                        high_52w = hist_df['high'].max()
+                        if high_52w is None or high_52w <= 0:
+                            high_52w = price
+                except:
+                    pass
+
                 drawdown = ((high_52w - price) / high_52w * 100) if high_52w > 0 else 0
 
                 items.append({
                     "sector": sector_name,
-                    "code": code,
+                    "code": sector["code"],
                     "price": round(price, 2),
                     "drawdown": round(drawdown, 2),
                     "high_52w": round(high_52w, 2),
-                    "change_pct": round(change_pct, 2),
-                    "date": today
-                })
-
-            logger.info(f"   新浪采集: {len(items)} 个板块")
-            return items
-
-        except requests.exceptions.Timeout:
-            logger.debug("   新浪请求超时")
-            return []
-        except Exception as e:
-            logger.debug(f"   新浪采集异常: {e}")
-            return []
-
-    def _fetch_from_eastmoney(self) -> List[Dict]:
-        """
-        使用东方财富 push2.eastmoney.com 接口
-        """
-        try:
-            url = "https://push2.eastmoney.com/api/qt/clist/get"
-            params = {
-                "pn": "1",
-                "pz": "50",
-                "po": "1",
-                "np": "1",
-                "fltt": "2",
-                "invt": "2",
-                "fs": "m:90+t:2",
-                "fields": "f2,f3,f4,f12,f13,f14,f104,f105,f128,f136,f140,f141,f207"
-            }
-            headers = {
-                "Referer": "https://quote.eastmoney.com/",
-                "Host": "push2.eastmoney.com"
-            }
-            resp = self.session.get(url, params=params, headers=headers, timeout=10)
-            if resp.status_code != 200:
-                return []
-
-            data = resp.json()
-            items_data = data.get("data", {}).get("diff", [])
-            if not items_data:
-                return []
-
-            today = datetime.now().strftime("%Y-%m-%d")
-            items = []
-
-            for item in items_data[:30]:
-                name = item.get("f14", "")
-                sector_name = None
-                for s in self.SECTOR_NAMES:
-                    if s in name:
-                        sector_name = s
-                        break
-                if not sector_name:
-                    continue
-
-                price = self._safe_float(item.get("f2", 0))
-                change_pct = self._safe_float(item.get("f3", 0))
-                # 东方财富不提供52周最高，使用当前价
-                high_52w = price
-                drawdown = 0
-
-                items.append({
-                    "sector": sector_name,
-                    "code": item.get("f12", ""),
-                    "price": round(price, 2),
-                    "drawdown": round(drawdown, 2),
-                    "high_52w": round(high_52w, 2),
-                    "change_pct": round(change_pct, 2),
                     "date": today
                 })
 
             return items
 
         except Exception as e:
-            logger.debug(f"   东方财富采集异常: {e}")
+            logger.debug(f"akshare 申万采集异常: {e}")
             return []
 
     def _fetch_from_cache(self) -> List[Dict]:
         cache_file = "staging/sector_cache.json"
         data = load_json(cache_file)
         if data:
-            cache_items = data.get('items', [])
-            if cache_items and len(cache_items) > 0:
-                logger.info(f"   📂 加载缓存: {len(cache_items)} 个板块")
-            return cache_items
+            return data.get('items', [])
         return []
 
     def _safe_float(self, value) -> float:
@@ -277,16 +320,13 @@ class SectorCollector:
 def collect_sector() -> Dict[str, Any]:
     collector = SectorCollector()
     result = collector.collect()
-    
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = f"staging/sector_{timestamp}.json"
     save_json(result, filepath)
-    
+
     if result["total"] > 0:
         save_json(result, "staging/sector_cache.json")
-        logger.info(f"✅ 板块缓存已更新: {result['total']} 项")
-    else:
-        logger.warning("⚠️ 板块采集失败，缓存保持不变")
 
     logger.info(f"📊 板块回撤: {result['total']} 项")
     return result
