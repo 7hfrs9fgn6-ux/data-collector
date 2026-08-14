@@ -4,19 +4,17 @@
 data-collector 大宗商品采集模块
 采集：原油、黄金、铜等大宗商品价格
 频率：每小时
-数据源：yfinance → akshare → 网页爬虫（兜底）
-★ 2026-08-14 新增：自动HMAC-SHA256签名 ★
+数据源：yfinance → akshare → 缓存
 """
 
 import sys
 import os
-import time
-from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional
+from datetime import datetime
+from typing import Dict, List, Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils import save_json, load_json, get_timestamp, load_config, sign_data
+from utils import save_json, load_json, get_timestamp, load_config
 
 import logging
 logging.basicConfig(
@@ -24,15 +22,6 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-
-def get_signing_key() -> str:
-    """从环境变量获取签名密钥"""
-    key = os.environ.get('SIGNING_KEY', '')
-    if not key:
-        logger.warning("⚠️ SIGNING_KEY 环境变量未设置，跳过签名")
-        return ""
-    return key
 
 
 class CommodityCollector:
@@ -52,16 +41,6 @@ class CommodityCollector:
         self.timeout = 15
 
     def collect(self) -> Dict[str, Any]:
-        """
-        采集大宗商品数据
-        返回: {
-            "timestamp": "...",
-            "source": "commodity",
-            "total": 5,
-            "items": [...],
-            "signature": "..."  ← 自动添加
-        }
-        """
         result = {
             "timestamp": get_timestamp(),
             "source": "commodity",
@@ -69,49 +48,34 @@ class CommodityCollector:
             "items": []
         }
 
-        # 尝试 yfinance
         data = self._fetch_from_yfinance()
         if data:
             result["items"] = data
             result["total"] = len(data)
             result["source"] = "yfinance"
             logger.info(f"✅ 大宗商品采集成功 (来源: yfinance, {len(data)} 项)")
-            # ★ 添加签名
-            key = get_signing_key()
-            if key:
-                result['signature'] = sign_data(result, key)
-            else:
-                result['signature'] = None
             return result
 
-        # 尝试 akshare
         data = self._fetch_from_akshare()
         if data:
             result["items"] = data
             result["total"] = len(data)
             result["source"] = "akshare"
             logger.info(f"✅ 大宗商品采集成功 (来源: akshare, {len(data)} 项)")
-            key = get_signing_key()
-            if key:
-                result['signature'] = sign_data(result, key)
-            else:
-                result['signature'] = None
             return result
 
-        # 从缓存加载
         data = self._fetch_from_cache()
         if data:
             result["items"] = data
             result["total"] = len(data)
             result["source"] = "cache"
             logger.info(f"✅ 大宗商品采集成功 (来源: 缓存, {len(data)} 项)")
-            # 缓存数据可能已包含签名，不重复添加
+            return result
 
         logger.warning("⚠️ 所有大宗商品数据源均失败")
         return result
 
     def _fetch_from_yfinance(self) -> List[Dict]:
-        """从 yfinance 获取大宗商品数据"""
         try:
             import yfinance as yf
 
@@ -155,7 +119,6 @@ class CommodityCollector:
             return []
 
     def _fetch_from_akshare(self) -> List[Dict]:
-        """从 akshare 获取大宗商品数据"""
         try:
             import akshare as ak
 
@@ -198,7 +161,6 @@ class CommodityCollector:
             return []
 
     def _fetch_from_cache(self) -> List[Dict]:
-        """从缓存加载大宗商品数据"""
         cache_file = "staging/commodity_cache.json"
         data = load_json(cache_file)
         if data:
@@ -207,18 +169,15 @@ class CommodityCollector:
 
 
 def collect_commodity() -> Dict[str, Any]:
-    """公开接口：采集大宗商品数据"""
     collector = CommodityCollector()
     result = collector.collect()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = f"staging/commodity_{timestamp}.json"
     save_json(result, filepath)
-
     save_json(result, "staging/commodity_cache.json")
 
     logger.info(f"📊 大宗商品: {result['total']} 项")
-    logger.info(f"🔐 签名状态: {'✅ 已签名' if result.get('signature') else '⚠️ 未签名'}")
     return result
 
 
