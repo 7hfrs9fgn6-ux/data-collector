@@ -1,21 +1,10 @@
-# data-collector 依赖清单
-# 普通开源项目风格，不含任何V系统信息
-
-# 基础依赖
 requests>=2.31.0
 feedparser>=6.0.0
 pyyaml>=6.0
 beautifulsoup4>=4.12.0
-
-# 市场数据采集（P0阶段新增）
 akshare>=1.12.0
 yfinance>=0.2.0
 pandas-datareader>=0.10.0
-
-# ★ ★ ★ 核心依赖：a-stock-data（用于板块回撤和北向资金） ★ ★ ★
-# 私密库已验证，完全免费，无需API Key
 a-stock-data>=3.3.0
-
-# 可选依赖
 pandas>=1.5.0
 numpy>=1.23.0
