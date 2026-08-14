@@ -1,5 +1,5 @@
 # data-collector 市场数据采集工作流
-# 采集：大宗商品、宏观、美股、板块回撤、北向资金、汇率
+# 采集：大宗商品、宏观、美股、板块回撤、汇率
 # 频率：每小时
 
 name: Market Data Collection
@@ -15,6 +15,7 @@ permissions:
 
 env:
   TZ: Asia/Shanghai
+  SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
 
 jobs:
   collect-market:
@@ -58,16 +59,14 @@ jobs:
         run: python scripts/collect_forex.py
         continue-on-error: true
 
-      - name: 数据签名
+      - name: 数据签名（补充）
         run: python scripts/sign.py
-        env:
-          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
         continue-on-error: true
 
       - name: 打印暂存区状态
         run: |
           echo "📦 市场数据文件列表:"
-          ls -la staging/ | grep -E "commodity|sector|north_flow|macro|us_stock|forex" || echo "   (暂无市场数据文件)"
+          ls -la staging/ | grep -E "commodity|sector|macro|us_stock|forex" || echo "   (暂无市场数据文件)"
 
       - name: 上传 Artifact
         uses: actions/upload-artifact@v4
