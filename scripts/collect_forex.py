@@ -5,6 +5,7 @@ data-collector 汇率数据采集模块
 采集：美元/人民币、欧元/人民币、日元/人民币等
 频率：每日1次
 数据源：akshare → 新浪财经 → 缓存
+★ 2026-08-14 新增：自动HMAC-SHA256签名 ★
 """
 
 import sys
@@ -14,7 +15,7 @@ from typing import Dict, List, Any, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils import save_json, load_json, get_timestamp, load_config
+from utils import save_json, load_json, get_timestamp, load_config, sign_data
 
 import logging
 logging.basicConfig(
@@ -22,6 +23,15 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def get_signing_key() -> str:
+    """从环境变量获取签名密钥"""
+    key = os.environ.get('SIGNING_KEY', '')
+    if not key:
+        logger.warning("⚠️ SIGNING_KEY 环境变量未设置，跳过签名")
+        return ""
+    return key
 
 
 class ForexCollector:
@@ -38,6 +48,16 @@ class ForexCollector:
         self.config = load_config()
 
     def collect(self) -> Dict[str, Any]:
+        """
+        采集汇率数据
+        返回: {
+            "timestamp": "...",
+            "source": "forex",
+            "total": 4,
+            "items": [...],
+            "signature": "..."  ← 自动添加
+        }
+        """
         result = {
             "timestamp": get_timestamp(),
             "source": "forex",
@@ -51,6 +71,11 @@ class ForexCollector:
             result["total"] = len(data)
             result["source"] = "akshare"
             logger.info(f"✅ 汇率采集成功 (来源: akshare, {len(data)} 项)")
+            key = get_signing_key()
+            if key:
+                result['signature'] = sign_data(result, key)
+            else:
+                result['signature'] = None
             return result
 
         data = self._fetch_from_sina()
@@ -59,6 +84,11 @@ class ForexCollector:
             result["total"] = len(data)
             result["source"] = "sina"
             logger.info(f"✅ 汇率采集成功 (来源: 新浪, {len(data)} 项)")
+            key = get_signing_key()
+            if key:
+                result['signature'] = sign_data(result, key)
+            else:
+                result['signature'] = None
             return result
 
         data = self._fetch_from_cache()
@@ -67,7 +97,6 @@ class ForexCollector:
             result["total"] = len(data)
             result["source"] = "cache"
             logger.info(f"✅ 汇率采集成功 (来源: 缓存, {len(data)} 项)")
-            return result
 
         logger.warning("⚠️ 所有汇率数据源均失败")
         return result
@@ -78,7 +107,6 @@ class ForexCollector:
 
             items = []
 
-            # 获取人民币汇率
             try:
                 df = ak.currency_rates()
                 if df is not None and not df.empty:
@@ -109,7 +137,6 @@ class ForexCollector:
             import requests
 
             items = []
-            # 新浪汇率接口
             symbols = ["fx_susdcny", "fx_seurcny", "fx_sjpycny", "fx_sgbpcny"]
             for symbol in symbols:
                 try:
@@ -127,8 +154,6 @@ class ForexCollector:
                             if start != -1 and end != -1:
                                 parts = content[start+1:end].split(',')
                                 if len(parts) >= 4:
-                                    # 部分字段说明
-                                    # 0: 货币名称, 1: 最新价, 2: 涨跌, 3: 涨跌幅
                                     price = float(parts[1])
                                     items.append({
                                         "currency": parts[0],
@@ -163,6 +188,7 @@ def collect_forex() -> Dict[str, Any]:
     save_json(result, "staging/forex_cache.json")
 
     logger.info(f"📊 汇率数据: {result['total']} 项")
+    logger.info(f"🔐 签名状态: {'✅ 已签名' if result.get('signature') else '⚠️ 未签名'}")
     return result
 
 
