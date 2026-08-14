@@ -214,3 +214,94 @@ security_check:
     - ".*\\.local$"
     - ".*\\.internal$"
     - ".*\\.private$"
+
+# ============================================================
+# ★ ★ ★ P0阶段新增：市场数据采集配置 ★ ★ ★
+# ============================================================
+
+# ----- 宏观数据采集 -----
+macro:
+  enabled: true
+  frequency: "daily"
+  data_sources:
+    - "akshare"
+    - "cache"
+  indicators:
+    - "GDP"
+    - "CPI"
+    - "PMI"
+    - "社融"
+
+# ----- 大宗商品采集 -----
+commodity:
+  enabled: true
+  frequency: "hourly"
+  symbols:
+    - "CL=F"      # WTI原油
+    - "GC=F"      # 黄金
+    - "HG=F"      # 铜
+    - "SI=F"      # 白银
+    - "BZ=F"      # 布伦特原油
+  data_sources:
+    - "yfinance"
+    - "akshare"
+    - "cache"
+
+# ----- 美股指数采集 -----
+us_stock:
+  enabled: true
+  frequency: "daily"
+  symbols:
+    - "^DJI"
+    - "^IXIC"
+    - "^GSPC"
+  data_sources:
+    - "yfinance"
+    - "datareader"
+    - "cache"
+
+# ----- 板块回撤采集 -----
+sector:
+  enabled: true
+  frequency: "hourly"
+  sectors:
+    - "电子"
+    - "计算机"
+    - "通信"
+    - "传媒"
+    - "医药生物"
+    - "食品饮料"
+    - "家用电器"
+    - "电力设备"
+    - "汽车"
+    - "国防军工"
+    - "银行"
+    - "非银金融"
+    - "公用事业"
+    - "煤炭"
+    - "石油石化"
+  data_sources:
+    - "akshare"
+    - "cache"
+
+# ----- 北向资金采集 -----
+north_flow:
+  enabled: true
+  frequency: "30min"
+  data_sources:
+    - "akshare"
+    - "cache"
+
+# ----- 汇率采集 -----
+forex:
+  enabled: true
+  frequency: "daily"
+  currencies:
+    - "USD/CNY"
+    - "EUR/CNY"
+    - "JPY/CNY"
+    - "GBP/CNY"
+  data_sources:
+    - "akshare"
+    - "sina"
+    - "cache"
