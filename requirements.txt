@@ -10,3 +10,6 @@ yfinance>=0.2.0
 pandas-datareader>=0.10.0
 pandas>=1.5.0
 numpy>=1.23.0
+
+# ★ 新增：a-stock-data（直接从 GitHub 安装）
+git+https://github.com/simonlin1212/a-stock-data.git
