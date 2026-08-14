@@ -2,14 +2,14 @@
 # -*- coding: utf-8 -*-
 """
 data-collector 新闻打包脚本
-将筛选后的新闻打包成标准JSON格式
+将筛选后的新闻打包成标准JSON格式，并添加HMAC-SHA256签名
 """
 
 import os
 import sys
 import json
 import glob
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Any
 import logging
 
@@ -33,8 +33,36 @@ def load_config() -> Dict[str, Any]:
     return {}
 
 
+def get_signing_key() -> str:
+    """从环境变量获取签名密钥"""
+    key = os.environ.get('SIGNING_KEY', '')
+    if not key:
+        logger.warning("⚠️ SIGNING_KEY 环境变量未设置，使用默认测试密钥")
+        return "test-key-do-not-use-in-production"
+    return key
+
+
+def sign_package(data: dict, key: str) -> str:
+    """
+    对数据包进行HMAC-SHA256签名
+    使用 utils.sign_data 保持一致性
+    """
+    # 排除 signature 字段本身
+    sign_data = {k: v for k, v in data.items() if k != 'signature'}
+    import json
+    import hmac
+    import hashlib
+    content = json.dumps(sign_data, sort_keys=True, ensure_ascii=False)
+    signature = hmac.new(
+        key.encode('utf-8'),
+        content.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+    return signature
+
+
 def pack_news(articles: List[Dict[str, Any]], config: Dict[str, Any] = None) -> Dict[str, Any]:
-    """打包新闻数据"""
+    """打包新闻数据，自动添加签名"""
     config = config or {}
 
     # 应用条数限制
@@ -50,7 +78,7 @@ def pack_news(articles: List[Dict[str, Any]], config: Dict[str, Any] = None) -> 
         source_stats[source] = source_stats.get(source, 0) + 1
 
     # 生成打包数据
-    return {
+    package = {
         'book': 'data-collector',
         'chapter': 'news_aggregation',
         'version': '3.0',
@@ -66,15 +94,26 @@ def pack_news(articles: List[Dict[str, Any]], config: Dict[str, Any] = None) -> 
         'metadata': {
             'sources': list(source_stats.keys()),
             'source_stats': source_stats,
-            'quality_score': min(1.0, len(articles) / 50)  # 50条以上得满分
-        },
-        'signature': None  # 由 sign_news.py 填充
+            'quality_score': min(1.0, len(articles) / 50)
+        }
     }
+
+    # ★ 自动添加签名 ★
+    key = get_signing_key()
+    package['signature'] = sign_package(package, key)
+
+    # 添加签名元数据
+    package['signature_metadata'] = {
+        'algorithm': 'HMAC-SHA256',
+        'timestamp': datetime.now().isoformat()
+    }
+
+    return package
 
 
 def main():
     logger.info("=" * 50)
-    logger.info("📦 data-collector 新闻打包启动")
+    logger.info("📦 data-collector 新闻打包启动（自动签名）")
     logger.info(f"📅 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 50)
 
@@ -104,8 +143,10 @@ def main():
     articles = data.get('articles', [])
     logger.info(f"📊 输入新闻: {len(articles)} 条")
 
-    # 打包
+    # 打包（自动签名）
     package = pack_news(articles, config)
+    signature = package.get('signature', '')
+    logger.info(f"🔐 签名: {signature[:16] if signature else '无'}...")
 
     # 保存打包文件
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
