@@ -6,6 +6,7 @@
 频率：每小时
 数据源：akshare（申万行业指数）→ 缓存
 增加重试机制，提高云环境稳定性
+★ 2026-08-14 新增：自动HMAC-SHA256签名 ★
 """
 
 import sys
@@ -16,7 +17,7 @@ from typing import Dict, List, Any, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils import save_json, load_json, get_timestamp, load_config
+from utils import save_json, load_json, get_timestamp, load_config, sign_data
 
 import logging
 logging.basicConfig(
@@ -24,6 +25,15 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def get_signing_key() -> str:
+    """从环境变量获取签名密钥"""
+    key = os.environ.get('SIGNING_KEY', '')
+    if not key:
+        logger.warning("⚠️ SIGNING_KEY 环境变量未设置，跳过签名")
+        return ""
+    return key
 
 
 # ============================================================
@@ -53,10 +63,20 @@ class SectorCollector:
 
     def __init__(self):
         self.config = load_config()
-        self.max_retries = 3  # 增加到3次
-        self.timeout = 8      # 增加到8秒
+        self.max_retries = 3
+        self.timeout = 8
 
     def collect(self) -> Dict[str, Any]:
+        """
+        采集板块52周回撤数据
+        返回: {
+            "timestamp": "...",
+            "source": "sector",
+            "total": 15,
+            "items": [...],
+            "signature": "..."  ← 自动添加
+        }
+        """
         result = {
             "timestamp": get_timestamp(),
             "source": "sector",
@@ -71,7 +91,6 @@ class SectorCollector:
             result["total"] = len(cached)
             result["source"] = "cache"
             logger.info(f"✅ 板块回撤从缓存加载 ({len(cached)} 项)")
-            # 缓存有效，但仍尝试后台更新（通过工作流下次触发）
 
         # 尝试实时采集（如果成功则覆盖缓存）
         data = self._fetch_all_sectors_with_retry()
@@ -79,14 +98,20 @@ class SectorCollector:
             result["items"] = data
             result["total"] = len(data)
             result["source"] = "akshare_sw"
-            # 更新缓存
             self._save_to_cache(data)
             logger.info(f"✅ 板块回撤实时采集成功 ({len(data)} 项)")
+            # ★ 添加签名
+            key = get_signing_key()
+            if key:
+                result['signature'] = sign_data(result, key)
+            else:
+                result['signature'] = None
             return result
 
-        # 如果实时失败但有缓存，返回缓存
+        # 如果实时失败但有缓存，返回缓存（缓存可能已包含签名）
         if cached:
             logger.info(f"📂 实时采集失败，使用缓存数据")
+            # 缓存数据可能已包含签名
             return result
 
         logger.warning("⚠️ 所有板块回撤数据源均失败")
@@ -102,13 +127,12 @@ class SectorCollector:
                 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 
                 MAX_WORKERS = 8
-                TIMEOUT = 12  # 增加到12秒
+                TIMEOUT = 12
 
                 # 先用简单方法获取整个数据表
                 try:
                     df = ak.stock_zh_index_spot_em(symbol="申万行业指数")
                     if df is not None and not df.empty:
-                        # 解析列名
                         name_col = None
                         price_col = None
                         high_col = None
@@ -121,7 +145,6 @@ class SectorCollector:
                                 high_col = col
 
                         if name_col and price_col:
-                            # 查找52周最高列
                             if not high_col:
                                 for col in df.columns:
                                     if '52周' in col and ('最高' in col or '高' in col):
@@ -261,7 +284,6 @@ class SectorCollector:
                 try:
                     dt = datetime.fromisoformat(cache_time)
                     age_minutes = (datetime.now() - dt).total_seconds() / 60
-                    # 缓存有效期 2 小时
                     if age_minutes > 120:
                         return []
                 except:
@@ -296,6 +318,7 @@ def collect_sector() -> Dict[str, Any]:
     save_json(result, filepath)
 
     logger.info(f"📊 板块回撤: {result['total']} 项")
+    logger.info(f"🔐 签名状态: {'✅ 已签名' if result.get('signature') else '⚠️ 未签名'}")
     return result
 
 
