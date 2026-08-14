@@ -5,6 +5,7 @@ data-collector 美股指数采集模块
 采集：道琼斯、纳斯达克、标普500 日线数据
 频率：每日1次（美股收盘后）
 数据源：yfinance → pandas_datareader → 缓存
+★ 2026-08-14 新增：自动HMAC-SHA256签名 ★
 """
 
 import sys
@@ -14,7 +15,7 @@ from typing import Dict, List, Any, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils import save_json, load_json, get_timestamp, load_config
+from utils import save_json, load_json, get_timestamp, load_config, sign_data
 
 import logging
 logging.basicConfig(
@@ -22,6 +23,15 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def get_signing_key() -> str:
+    """从环境变量获取签名密钥"""
+    key = os.environ.get('SIGNING_KEY', '')
+    if not key:
+        logger.warning("⚠️ SIGNING_KEY 环境变量未设置，跳过签名")
+        return ""
+    return key
 
 
 class USStockCollector:
@@ -37,6 +47,16 @@ class USStockCollector:
         self.config = load_config()
 
     def collect(self) -> Dict[str, Any]:
+        """
+        采集美股指数数据
+        返回: {
+            "timestamp": "...",
+            "source": "us_stock",
+            "total": 3,
+            "items": [...],
+            "signature": "..."  ← 自动添加
+        }
+        """
         result = {
             "timestamp": get_timestamp(),
             "source": "us_stock",
@@ -51,6 +71,11 @@ class USStockCollector:
             result["total"] = len(data)
             result["source"] = "yfinance"
             logger.info(f"✅ 美股指数采集成功 (来源: yfinance, {len(data)} 项)")
+            key = get_signing_key()
+            if key:
+                result['signature'] = sign_data(result, key)
+            else:
+                result['signature'] = None
             return result
 
         # 尝试 pandas_datareader
@@ -60,6 +85,11 @@ class USStockCollector:
             result["total"] = len(data)
             result["source"] = "datareader"
             logger.info(f"✅ 美股指数采集成功 (来源: datareader, {len(data)} 项)")
+            key = get_signing_key()
+            if key:
+                result['signature'] = sign_data(result, key)
+            else:
+                result['signature'] = None
             return result
 
         # 从缓存加载
@@ -69,7 +99,7 @@ class USStockCollector:
             result["total"] = len(data)
             result["source"] = "cache"
             logger.info(f"✅ 美股指数采集成功 (来源: 缓存, {len(data)} 项)")
-            return result
+            # 缓存数据可能已包含签名
 
         logger.warning("⚠️ 所有美股指数数据源均失败")
         return result
@@ -91,7 +121,6 @@ class USStockCollector:
                     if price <= 0:
                         continue
 
-                    # 计算涨跌幅
                     change_pct = 0
                     if len(hist) >= 2:
                         prev_close = float(hist.iloc[-2]['Close'])
@@ -183,6 +212,7 @@ def collect_us_stock() -> Dict[str, Any]:
     save_json(result, "staging/us_stock_cache.json")
 
     logger.info(f"📊 美股指数: {result['total']} 项")
+    logger.info(f"🔐 签名状态: {'✅ 已签名' if result.get('signature') else '⚠️ 未签名'}")
     return result
 
 
