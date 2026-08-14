@@ -46,10 +46,6 @@ jobs:
         run: python scripts/collect_sector.py
         continue-on-error: true
 
-      - name: 采集北向资金
-        run: python scripts/collect_north_flow.py
-        continue-on-error: true
-
       - name: 采集宏观数据
         run: python scripts/collect_macro.py
         continue-on-error: true
