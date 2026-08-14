@@ -4,7 +4,7 @@
 data-collector 大宗商品采集模块
 采集：原油、黄金、铜等大宗商品价格
 频率：每小时
-数据源：yfinance → akshare → 网页爬虫(investing.com) → 缓存
+数据源：yfinance → akshare → 网页爬虫（兜底）
 """
 
 import sys
@@ -48,7 +48,7 @@ class CommodityCollector:
         返回: {
             "timestamp": "...",
             "source": "commodity",
-            "total": 0,
+            "total": 5,
             "items": [...]
         }
         """
@@ -59,7 +59,7 @@ class CommodityCollector:
             "items": []
         }
 
-        # 1️⃣ 尝试 yfinance（主源）
+        # 尝试 yfinance
         data = self._fetch_from_yfinance()
         if data:
             result["items"] = data
@@ -68,7 +68,7 @@ class CommodityCollector:
             logger.info(f"✅ 大宗商品采集成功 (来源: yfinance, {len(data)} 项)")
             return result
 
-        # 2️⃣ 尝试 akshare（备源）
+        # 尝试 akshare
         data = self._fetch_from_akshare()
         if data:
             result["items"] = data
@@ -77,16 +77,7 @@ class CommodityCollector:
             logger.info(f"✅ 大宗商品采集成功 (来源: akshare, {len(data)} 项)")
             return result
 
-        # 3️⃣ P1阶段新增：网页爬虫降级（investing.com）
-        data = self._fetch_from_scraper()
-        if data:
-            result["items"] = data
-            result["total"] = len(data)
-            result["source"] = "degraded_web_scraper"
-            logger.info(f"✅ 大宗商品采集成功 (来源: 网页爬虫, {len(data)} 项)")
-            return result
-
-        # 4️⃣ 从缓存加载（兜底）
+        # 从缓存加载
         data = self._fetch_from_cache()
         if data:
             result["items"] = data
@@ -186,41 +177,6 @@ class CommodityCollector:
             return []
         except Exception as e:
             logger.debug(f"akshare 大宗商品采集异常: {e}")
-            return []
-
-    # ════════════════════════════════════════════════════════════════
-    # ★ P1阶段新增：网页爬虫降级
-    # ════════════════════════════════════════════════════════════════
-    def _fetch_from_scraper(self) -> List[Dict]:
-        """
-        从 investing.com 爬取大宗商品数据（降级方案）
-        """
-        try:
-            # 动态导入爬虫模块
-            from scrapers import scrape_commodities
-
-            logger.info("🔄 降级到网页爬虫: investing.com")
-            result = scrape_commodities()
-
-            if result and result.get('items'):
-                items = []
-                for item in result['items']:
-                    items.append({
-                        "name": item.get('name', ''),
-                        "symbol": item.get('symbol', ''),
-                        "price": round(item.get('price', 0), 2),
-                        "change_pct": round(item.get('change_pct', 0), 2),
-                        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    })
-                return items
-
-            return []
-
-        except ImportError as e:
-            logger.debug(f"爬虫模块未安装: {e}")
-            return []
-        except Exception as e:
-            logger.debug(f"网页爬虫采集异常: {e}")
             return []
 
     def _fetch_from_cache(self) -> List[Dict]:
