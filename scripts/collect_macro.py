@@ -5,6 +5,7 @@ data-collector 宏观数据采集模块
 采集：GDP、CPI、PMI、社融等宏观经济指标
 频率：每日1次
 数据源：akshare → 网页爬虫（兜底）
+★ 2026-08-14 新增：自动HMAC-SHA256签名 ★
 """
 
 import sys
@@ -16,7 +17,7 @@ from typing import Dict, List, Any, Optional
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils import save_json, load_json, get_timestamp, truncate_text, load_config
+from utils import save_json, load_json, get_timestamp, truncate_text, load_config, sign_data
 
 import logging
 logging.basicConfig(
@@ -24,6 +25,15 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def get_signing_key() -> str:
+    """从环境变量获取签名密钥"""
+    key = os.environ.get('SIGNING_KEY', '')
+    if not key:
+        logger.warning("⚠️ SIGNING_KEY 环境变量未设置，跳过签名")
+        return ""
+    return key
 
 
 class MacroDataCollector:
@@ -41,7 +51,8 @@ class MacroDataCollector:
             "timestamp": "...",
             "source": "macro",
             "total": 5,
-            "items": [...]
+            "items": [...],
+            "signature": "..."  ← 自动添加
         }
         """
         result = {
@@ -72,6 +83,15 @@ class MacroDataCollector:
 
         if result["total"] == 0:
             logger.warning("⚠️ 所有宏观数据源均失败，使用空数据")
+
+        # ★ 自动添加签名 ★
+        key = get_signing_key()
+        if key:
+            result['signature'] = sign_data(result, key)
+            logger.debug(f"🔐 宏观数据已签名: {result['signature'][:16]}...")
+        else:
+            result['signature'] = None
+            logger.warning("⚠️ 宏观数据未签名（SIGNING_KEY 未设置）")
 
         return result
 
@@ -127,14 +147,6 @@ class MacroDataCollector:
             except Exception as e:
                 logger.debug(f"PMI 采集失败: {e}")
 
-            # 4. 社融存量增速
-            try:
-                # 使用 shibor 数据作为替代（保留占位）
-                # 实际可扩展
-                pass
-            except Exception as e:
-                pass
-
             logger.info(f"   ✅ akshare 宏观: {len(macro_data)} 项")
             return macro_data
 
@@ -171,7 +183,7 @@ def collect_macro() -> Dict[str, Any]:
     collector = MacroDataCollector()
     result = collector.collect()
 
-    # 保存到暂存区
+    # 保存到暂存区（已包含签名）
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = f"staging/macro_{timestamp}.json"
     save_json(result, filepath)
@@ -180,6 +192,7 @@ def collect_macro() -> Dict[str, Any]:
     save_json(result, "staging/macro_cache.json")
 
     logger.info(f"📊 宏观数据: {result['total']} 项")
+    logger.info(f"🔐 签名状态: {'✅ 已签名' if result.get('signature') else '⚠️ 未签名'}")
     return result
 
 
