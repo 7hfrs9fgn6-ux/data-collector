@@ -1,9 +1,17 @@
+# data-collector 依赖清单
 requests>=2.31.0
 feedparser>=6.0.0
 pyyaml>=6.0
 beautifulsoup4>=4.12.0
+
+# 市场数据采集
 akshare>=1.12.0
 yfinance>=0.2.0
 pandas-datareader>=0.10.0
+
+# ★ 新增：baostock（用于板块52周回撤采集）
+baostock>=0.8.8
+
+# 可选依赖
 pandas>=1.5.0
 numpy>=1.23.0
