@@ -5,7 +5,8 @@ pyyaml>=6.0
 beautifulsoup4>=4.12.0
 
 # 市场数据采集
-akshare>=1.12.0
+akshare>=1.17.20
+akshare-proxy-patch>=0.1.0  # ← 新增
 yfinance>=0.2.0
 pandas-datareader>=0.10.0
 pandas>=1.5.0
