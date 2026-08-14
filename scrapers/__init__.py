@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""P1阶段：爬虫降级模块"""
+"""
+P1阶段：爬虫降级模块
+提供各数据源的网页爬虫兜底能力
+"""
 
 from .base_scraper import BaseScraper
 from .commodity_scraper import CommodityScraper, scrape_commodities
