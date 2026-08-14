@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-data-collector 北向资金历史采集模块（纯 requests 版）
-直接调用东方财富数据中心 API，无需额外依赖
+data-collector 北向资金历史采集模块（hhxg-market 风格）
+零依赖，仅使用 Python 标准库 + requests
+直连东方财富数据中心 API，获取沪深港通资金流向
+频率：每30分钟
+数据源：东方财富数据中心 → 缓存
 """
 
 import sys
 import os
-import time
 import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
@@ -31,7 +33,7 @@ except ImportError:
 
 
 class NorthFlowCollector:
-    """北向资金采集器（纯 requests）"""
+    """北向资金采集器（纯 requests + 东财API）"""
 
     def __init__(self):
         self.config = load_config()
@@ -52,7 +54,7 @@ class NorthFlowCollector:
             "items": []
         }
 
-        # 方法1：直接调用东财数据中心
+        # 方法1：东财数据中心（优先）
         data = self._fetch_from_eastmoney_datacenter()
         if data:
             result["items"] = data
@@ -78,12 +80,13 @@ class NorthFlowCollector:
             return []
 
         try:
+            # 使用东财数据中心 API
             url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
             params = {
                 "reportName": "RPT_HSGT_DAILY",
                 "columns": "TRADE_DATE,HGT_NET_INFLOW,SGT_NET_INFLOW",
                 "pageNumber": "1",
-                "pageSize": "3",
+                "pageSize": "2",
                 "sortColumns": "TRADE_DATE",
                 "sortTypes": "-1",
                 "source": "WEB",
@@ -91,6 +94,7 @@ class NorthFlowCollector:
             }
 
             resp = self.session.get(url, params=params, timeout=15)
+
             if resp.status_code != 200:
                 logger.debug(f"东财数据中心 HTTP {resp.status_code}")
                 return []
@@ -105,7 +109,7 @@ class NorthFlowCollector:
                 return []
 
             items = []
-            for row in rows[:2]:
+            for row in rows:
                 trade_date = row.get("TRADE_DATE", "")
                 hgt = row.get("HGT_NET_INFLOW", 0)
                 sgt = row.get("SGT_NET_INFLOW", 0)
@@ -131,6 +135,17 @@ class NorthFlowCollector:
         cache_file = "staging/north_flow_cache.json"
         data = load_json(cache_file)
         if data:
+            # 检查缓存是否过期（30分钟内）
+            cache_time = data.get('timestamp', '')
+            if cache_time:
+                try:
+                    dt = datetime.fromisoformat(cache_time)
+                    age_minutes = (datetime.now() - dt).total_seconds() / 60
+                    if age_minutes > 60:
+                        logger.debug("北向资金缓存已过期")
+                        return []
+                except:
+                    pass
             return data.get('items', [])
         return []
 
