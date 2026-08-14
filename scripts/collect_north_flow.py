@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-data-collector 北向资金历史采集模块
+data-collector 北向资金历史采集模块（修复版）
 采集：沪股通、深股通历史累计净流入
 频率：每30分钟
-数据源：akshare → 东方财富爬虫 → 缓存
+数据源：akshare (em/sina) → 缓存
 """
 
 import sys
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 class NorthFlowCollector:
-    """北向资金历史采集器"""
+    """北向资金历史采集器（修复版）"""
 
     def __init__(self):
         self.config = load_config()
@@ -38,7 +38,7 @@ class NorthFlowCollector:
             "items": []
         }
 
-        # 尝试 akshare
+        # 尝试多个 akshare 接口
         data = self._fetch_from_akshare()
         if data:
             result["items"] = data
@@ -64,42 +64,55 @@ class NorthFlowCollector:
             import akshare as ak
 
             today = datetime.now().strftime("%Y-%m-%d")
+            items = []
 
-            # 获取北向资金历史数据
+            # 方法1: 使用 stock_hsgt_north_net_flow_in_em（东方财富）
             try:
-                # 使用 stock_hsgt_north_net_flow_in_em（东财接口）
-                df = ak.stock_hsgt_north_net_flow_in_em(symbol="沪股通")
-                if df is not None and not df.empty:
-                    # 取最近30天
-                    recent = df.tail(30)
-                    items = []
+                df_em = ak.stock_hsgt_north_net_flow_in_em(symbol="沪股通")
+                if df_em is not None and not df_em.empty:
+                    recent = df_em.tail(30)
                     for _, row in recent.iterrows():
                         items.append({
                             "type": "沪股通",
-                            "date": row.get('date', ''),
-                            "value": round(float(row.get('value', 0)) / 10000, 2),  # 转换为亿元
-                            "cumulative": round(float(row.get('cumulative', 0)) / 10000, 2)
-                        })
-                    return items
-            except Exception as e:
-                logger.debug(f"沪股通采集失败: {e}")
-
-            # 尝试深股通
-            try:
-                df = ak.stock_hsgt_north_net_flow_in_em(symbol="深股通")
-                if df is not None and not df.empty:
-                    recent = df.tail(30)
-                    items = []
-                    for _, row in recent.iterrows():
-                        items.append({
-                            "type": "深股通",
                             "date": row.get('date', ''),
                             "value": round(float(row.get('value', 0)) / 10000, 2),
                             "cumulative": round(float(row.get('cumulative', 0)) / 10000, 2)
                         })
                     return items
             except Exception as e:
-                logger.debug(f"深股通采集失败: {e}")
+                logger.debug(f"沪股通(em)采集失败: {e}")
+
+            # 方法2: 使用 stock_hsgt_north_net_flow_in_sina（新浪）
+            try:
+                df_sina = ak.stock_hsgt_north_net_flow_in_sina(symbol="沪股通")
+                if df_sina is not None and not df_sina.empty:
+                    recent = df_sina.tail(30)
+                    for _, row in recent.iterrows():
+                        items.append({
+                            "type": "沪股通",
+                            "date": row.get('date', ''),
+                            "value": round(float(row.get('value', 0)) / 10000, 2),
+                            "cumulative": round(float(row.get('cumulative', 0)) / 10000, 2)
+                        })
+                    return items
+            except Exception as e:
+                logger.debug(f"沪股通(sina)采集失败: {e}")
+
+            # 如果以上都失败，尝试直接从 history 接口获取
+            try:
+                df_hist = ak.stock_hsgt_hist(symbol="沪股通")
+                if df_hist is not None and not df_hist.empty:
+                    recent = df_hist.tail(30)
+                    for _, row in recent.iterrows():
+                        items.append({
+                            "type": "沪股通",
+                            "date": row.get('date', ''),
+                            "value": round(float(row.get('net_inflow', 0)), 2),
+                            "cumulative": round(float(row.get('cumulative', 0)), 2)
+                        })
+                    return items
+            except Exception as e:
+                logger.debug(f"沪股通(hist)采集失败: {e}")
 
             return []
 
