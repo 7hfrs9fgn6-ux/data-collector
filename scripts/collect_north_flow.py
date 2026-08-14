@@ -25,6 +25,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ============================================================
+# ★ 新增：导入 akshare-proxy-patch（必须在 akshare 之前）
+# ============================================================
+try:
+    import akshare_proxy_patch  # type: ignore
+    PATCH_LOADED = True
+    logger.info("✅ akshare-proxy-patch 已加载")
+except ImportError:
+    PATCH_LOADED = False
+    logger.warning("⚠️ akshare-proxy-patch 未安装，将使用普通模式")
+
 try:
     import requests
     HAS_REQUESTS = True
@@ -63,7 +74,7 @@ class NorthFlowCollector:
             "items": []
         }
 
-        # 方法列表（按优先级排序）
+        # 方法列表（按优先级排序）- 将 akshare 放在最前面
         methods = [
             ("akshare", self._fetch_from_akshare),
             ("sina", self._fetch_from_sina),
@@ -101,9 +112,19 @@ class NorthFlowCollector:
             logger.info(f"✅ 北向资金从缓存加载 ({len(data)} 项)")
             return result
 
-        logger.warning("⚠️ 所有北向资金数据源均失败")
+        # ★ 新增：终极兜底（确保不崩溃）
+        logger.warning("⚠️ 所有北向数据源失败，使用默认值（不影响核心功能）")
+        result["items"] = [{
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "沪股通": 0,
+            "深股通": 0,
+            "合计": 0
+        }]
+        result["total"] = 1
+        result["source"] = "default"
         return result
 
+    # ----- 以下所有方法保持原样，未做任何修改 -----
     def _fetch_from_akshare(self) -> List[Dict]:
         """akshare 接口（带重试）"""
         try:
