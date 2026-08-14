@@ -9,9 +9,6 @@ akshare>=1.12.0
 yfinance>=0.2.0
 pandas-datareader>=0.10.0
 
-# ★ 新增：baostock（用于板块52周回撤采集）
-baostock>=0.8.8
-
 # 可选依赖
 pandas>=1.5.0
 numpy>=1.23.0
