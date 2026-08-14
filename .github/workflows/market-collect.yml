@@ -59,18 +59,18 @@ jobs:
         run: python scripts/collect_forex.py
         continue-on-error: true
 
-      - name: 数据签名（补充）
+      - name: 数据签名
         run: python scripts/sign.py
         continue-on-error: true
 
       - name: 打印暂存区状态
         run: |
           echo "📦 市场数据文件列表:"
-          ls -la staging/ | grep -E "commodity|sector|macro|us_stock|forex" || echo "   (暂无市场数据文件)"
+          ls -la staging/ | grep -E "_signed" || echo "   (暂无签名文件)"
 
-      - name: 上传 Artifact
+      - name: 上传 Artifact（已签名文件）
         uses: actions/upload-artifact@v4
         with:
           name: market-data
-          path: staging/*_*.json
+          path: staging/*_*_signed.json
           retention-days: 7
