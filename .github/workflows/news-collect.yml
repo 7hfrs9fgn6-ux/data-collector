@@ -25,6 +25,7 @@ permissions:
 env:
   TZ: Asia/Shanghai
   PYTHONUNBUFFERED: "1"
+  SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
 
 jobs:
   collect-news:
@@ -66,13 +67,11 @@ jobs:
           python scripts/pack_news.py
         continue-on-error: true
 
-      - name: 数据签名
+      - name: 数据签名（使用 sign.py 统一格式）
         if: github.event.inputs.skip_sign != 'true'
         run: |
-          echo "🔐 开始签名..."
-          python scripts/sign_news.py
-        env:
-          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          echo "🔐 开始签名（payload 格式）..."
+          python scripts/sign.py
         continue-on-error: true
 
       - name: 安全检查
@@ -87,11 +86,11 @@ jobs:
           python scripts/cleanup.py --days 7
         continue-on-error: true
 
-      - name: 上传新闻数据包（已签名）
+      - name: 上传新闻数据包（payload 格式签名）
         uses: actions/upload-artifact@v4
         with:
           name: news-data
-          path: staging/news_package_signed_*.json
+          path: staging/news_package_*_signed.json
           retention-days: 7
 
       - name: 完成日志
