@@ -20,9 +20,10 @@ from typing import List, Dict, Tuple, Optional, Set
 # 排除文件列表（不扫描）
 # ============================================================
 EXCLUDED_FILES = {
-    'scan_sensitive.py',  # 扫描脚本自身
-    'security_check.py',  # 安全检查脚本
+    'scan_sensitive.py',
+    'security_check.py',
     '__init__.py',
+    'generate_signing_key.py',  # 工具脚本，提示信息合理
 }
 
 
@@ -83,7 +84,7 @@ STRATEGY_KEYWORDS = [
     r'memory_interface',
     r'shadow_system',
     r'ds_agent',
-    r'boundary_checker',  # 修正拼写
+    r'boundary_checker',
     r'data_source_router',
 ]
 
@@ -95,25 +96,6 @@ API_KEY_PATTERNS = [
     r'password\s*=\s*["\']([^"\']+)["\']',
     r'credential\s*=\s*["\']([^"\']+)["\']',
 ]
-
-
-# ============================================================
-# 辅助：检查字符串是否在注释或文档字符串中
-# ============================================================
-
-def is_in_comment_or_string(line: str, code: str, pos: int) -> bool:
-    """
-    简单检查位置是否在注释或字符串中
-    使用 tokenize 更准确，但这里用简单方法快速判断
-    """
-    # 检查是否在注释中
-    if '#' in line:
-        comment_start = line.find('#')
-        if pos >= comment_start:
-            return True
-    # 检查是否在字符串中（简单判断）
-    # 不完美，但足够避免误报
-    return False
 
 
 # ============================================================
@@ -140,14 +122,12 @@ def scan_file_ast(filepath: Path) -> Dict[str, List[Tuple[int, str]]]:
     try:
         tree = ast.parse(content)
     except SyntaxError:
-        # 如果解析失败，使用正则扫描（但可能误报）
         return scan_file_regex(filepath)
     
     # 遍历 AST 节点
     for node in ast.walk(tree):
         # 跳过函数定义、类定义等（只检查表达式）
         if isinstance(node, (ast.FunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)):
-            # 检查函数名/类名
             if hasattr(node, 'name'):
                 node_name = node.name
                 for pattern in V_SYSTEM_TERMS + STRATEGY_KEYWORDS + INTERNAL_PATHS:
@@ -155,9 +135,7 @@ def scan_file_ast(filepath: Path) -> Dict[str, List[Tuple[int, str]]]:
                         key = "V系统术语" if pattern in V_SYSTEM_TERMS else ("策略关键词" if pattern in STRATEGY_KEYWORDS else "内部路径引用")
                         if key not in results:
                             results[key] = []
-                        # 获取行号
                         line_no = node.lineno
-                        # 获取该行内容
                         if line_no <= len(lines):
                             line_content = lines[line_no - 1].strip()
                             results[key].append((line_no, line_content[:80]))
@@ -206,11 +184,9 @@ def scan_file_regex(filepath: Path) -> Dict[str, List[Tuple[int, str]]]:
     
     for line_num, line in enumerate(lines, 1):
         line_stripped = line.strip()
-        # 跳过空行和注释
         if not line_stripped or line_stripped.startswith('#'):
             continue
         
-        # 检查敏感模式
         for pattern in V_SYSTEM_TERMS:
             if re.search(pattern, line, re.IGNORECASE):
                 if "V系统术语" not in results:
@@ -241,7 +217,6 @@ def scan_file_regex(filepath: Path) -> Dict[str, List[Tuple[int, str]]]:
         
         for pattern in API_KEY_PATTERNS:
             if re.search(pattern, line, re.IGNORECASE):
-                # 排除环境变量读取
                 if 'os.environ' not in line and 'os.getenv' not in line:
                     if "API Key硬编码" not in results:
                         results["API Key硬编码"] = []
@@ -260,16 +235,13 @@ def scan_directory(directory: Path) -> Dict[str, Dict]:
     py_files = list(directory.rglob("*.py"))
     
     for py_file in py_files:
-        # 排除文件
         if py_file.name in EXCLUDED_FILES:
             continue
-        # 跳过虚拟环境
         if 'venv' in str(py_file) or '__pycache__' in str(py_file):
             continue
         
         file_results = scan_file_ast(py_file)
         if file_results:
-            # 过滤掉空结果
             filtered = {k: v for k, v in file_results.items() if v}
             if filtered:
                 results[str(py_file.relative_to(directory.parent))] = filtered
