@@ -1,0 +1,69 @@
+name: Debug Signature
+
+on:
+  workflow_dispatch:
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install requests pyyaml
+
+      - name: Create test data
+        run: |
+          mkdir -p staging
+          python -c "
+import json
+from datetime import datetime
+
+test_data = {
+    'book': 'data-collector',
+    'chapter': 'test',
+    'generated_at': datetime.now().isoformat(),
+    'content': {'test': 'hello world', 'number': 42},
+    'metadata': {'source': 'debug'}
+}
+with open('staging/test_data.json', 'w') as f:
+    json.dump(test_data, f, indent=2)
+print('✅ test_data.json created')
+"
+
+      - name: Sign with sign_news.py
+        run: |
+          python scripts/sign_news.py
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+
+      - name: Sign with sign.py
+        run: |
+          python scripts/sign.py
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+
+      - name: Print signed files content
+        run: |
+          echo "=== Content of staging/*_signed.json ==="
+          for f in staging/*_signed.json; do
+            echo "--- $f ---"
+            cat "$f" | python -m json.tool
+            echo ""
+          done
+
+      - name: Upload signed files as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-debug
+          path: staging/*_signed.json
+          retention-days: 1
