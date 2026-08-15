@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 data-collector 通用工具函数
-普通开源工具风格，不含任何V系统信息
 """
 
 import json
