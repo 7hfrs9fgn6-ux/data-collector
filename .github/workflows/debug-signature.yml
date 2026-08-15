@@ -1,69 +1,195 @@
+# 调试工作流：验证公开库数据包签名
+# 用于排查签名验证失败问题
+
 name: Debug Signature
 
 on:
   workflow_dispatch:
+    inputs:
+      artifact_name:
+        description: '要调试的 Artifact 名称'
+        type: choice
+        options:
+          - news-data
+          - market-data
+          - collected-data
+        default: 'news-data'
+
+permissions:
+  contents: read
+  actions: write
 
 env:
   TZ: Asia/Shanghai
+  SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
 
 jobs:
   debug:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Setup Python
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Install dependencies
-        run: pip install requests pyyaml
-
-      - name: Create test data
+      - name: 安装依赖
         run: |
-          mkdir -p staging
+          python -m pip install --upgrade pip
+          pip install requests pyyaml
+
+      - name: 下载并调试 Artifact
+        run: |
           python -c "
-import json
-from datetime import datetime
+          import os
+          import sys
+          import json
+          import zipfile
+          import io
+          import hmac
+          import hashlib
+          import requests
+          from datetime import datetime
 
-test_data = {
-    'book': 'data-collector',
-    'chapter': 'test',
-    'generated_at': datetime.now().isoformat(),
-    'content': {'test': 'hello world', 'number': 42},
-    'metadata': {'source': 'debug'}
-}
-with open('staging/test_data.json', 'w') as f:
-    json.dump(test_data, f, indent=2)
-print('✅ test_data.json created')
-"
+          artifact_name = '${{ github.event.inputs.artifact_name }}'
+          token = os.environ.get('GITHUB_TOKEN', '')
+          signing_key = os.environ.get('SIGNING_KEY', '')
 
-      - name: Sign with sign_news.py
-        run: |
-          python scripts/sign_news.py
+          print('=' * 60)
+          print('🔍 调试签名验证')
+          print(f'   Artifact: {artifact_name}')
+          print(f'   SIGNING_KEY 长度: {len(signing_key)} 字符')
+          print(f'   SIGNING_KEY 前缀: {signing_key[:8] if signing_key else \"未配置\"}...')
+          print('=' * 60)
+
+          # 1. 获取 Artifact
+          url = f'https://api.github.com/repos/7hfrs9fgn6-ux/data-collector/actions/artifacts'
+          headers = {
+              'Authorization': f'token {token}',
+              'Accept': 'application/vnd.github.v3+json'
+          }
+          resp = requests.get(url, headers=headers, timeout=10)
+          data = resp.json()
+          artifacts = data.get('artifacts', [])
+          matched = [a for a in artifacts if a.get('name') == artifact_name]
+          if not matched:
+              print(f'❌ 未找到 Artifact: {artifact_name}')
+              sys.exit(1)
+          matched.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+          latest = matched[0]
+          print(f'✅ 找到 Artifact: {artifact_name}')
+          print(f'   ID: {latest.get(\"id\")}')
+          print(f'   创建时间: {latest.get(\"created_at\")}')
+          print(f'   大小: {latest.get(\"size_in_bytes\")} 字节')
+
+          # 2. 下载 Artifact
+          download_url = latest.get('archive_download_url')
+          resp = requests.get(download_url, headers=headers, timeout=30)
+          print(f'✅ 下载完成: {len(resp.content)} 字节')
+
+          # 3. 解压并读取 JSON
+          try:
+              with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+                  json_files = [f for f in zf.namelist() if f.endswith('.json')]
+                  print(f'📂 找到 {len(json_files)} 个 JSON 文件:')
+                  for f in json_files:
+                      print(f'   - {f}')
+                  if not json_files:
+                      print('❌ 未找到 JSON 文件')
+                      sys.exit(1)
+                  json_files.sort(reverse=True)
+                  with zf.open(json_files[0]) as f:
+                      package = json.loads(f.read().decode('utf-8'))
+          except zipfile.BadZipFile:
+              package = resp.json()
+
+          # 4. 打印数据包结构（前500字符）
+          print('\n📦 数据包结构:')
+          print('=' * 60)
+          print(json.dumps(package, indent=2, ensure_ascii=False)[:1500])
+          if len(json.dumps(package)) > 1500:
+              print('... (截断)')
+          print('=' * 60)
+
+          # 5. 检查签名字段
+          print(f'\n🔐 签名字段:')
+          print(f'   signature 是否存在: {\"signature\" in package}')
+          signature = package.get('signature')
+          print(f'   signature 值: {signature[:32] if signature else \"None\"}...')
+          print(f'   signature 类型: {type(signature)}')
+          print(f'   signature_metadata 是否存在: {\"signature_metadata\" in package}')
+          if 'signature_metadata' in package:
+              print(f'   signature_metadata: {package.get(\"signature_metadata\")}')
+
+          # 6. 检查 payload 字段
+          print(f'\n📋 字段列表:')
+          for key in package.keys():
+              print(f'   - {key}')
+
+          # 7. 如果有 payload，检查 payload
+          if 'payload' in package:
+              print(f'\n📋 Payload 字段:')
+              for key in package['payload'].keys():
+                  print(f'   - {key}')
+
+          # 8. 测试签名验证（与 sign_news.py 逻辑完全一致）
+          print('\n🧪 重新计算签名 (与 sign_news.py 一致):')
+          if signing_key and signature:
+              # 排除 signature 和 signature_metadata（与 sign_news.py 一致）
+              sign_data = {k: v for k, v in package.items() if k not in ['signature', 'signature_metadata']}
+              content = json.dumps(sign_data, sort_keys=True, ensure_ascii=False)
+              expected = hmac.new(
+                  signing_key.encode('utf-8'),
+                  content.encode('utf-8'),
+                  hashlib.sha256
+              ).hexdigest()
+
+              print(f'   数据包签名: {signature[:16]}...')
+              print(f'   计算签名:   {expected[:16]}...')
+
+              if hmac.compare_digest(signature, expected):
+                  print('   ✅ 签名验证通过！')
+              else:
+                  print('   ❌ 签名验证失败！')
+                  print('   ⚠️ 可能原因:')
+                  print('      1. 签名字段被修改')
+                  print('      2. SIGNING_KEY 不一致')
+                  print('      3. 签名时包含了多余字段')
+          else:
+              print('   ⚠️ 缺少 SIGNING_KEY 或 signature')
+
+          # 9. 如果有 payload，也测试 payload 格式
+          if 'payload' in package:
+              print('\n🧪 测试 payload 格式验证:')
+              payload_data = package['payload']
+              payload_signature = package.get('signature')
+              if payload_signature:
+                  content = json.dumps(payload_data, sort_keys=True, ensure_ascii=False)
+                  expected = hmac.new(
+                      signing_key.encode('utf-8'),
+                      content.encode('utf-8'),
+                      hashlib.sha256
+                  ).hexdigest()
+                  print(f'   payload 签名: {payload_signature[:16]}...')
+                  print(f'   计算签名:    {expected[:16]}...')
+                  if hmac.compare_digest(payload_signature, expected):
+                      print('   ✅ payload 签名验证通过！')
+                  else:
+                      print('   ❌ payload 签名验证失败！')
+
+          print('\n' + '=' * 60)
+          print('✅ 调试完成')
+          "
         env:
-          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Sign with sign.py
+      - name: 输出调试摘要
         run: |
-          python scripts/sign.py
-        env:
-          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
-
-      - name: Print signed files content
-        run: |
-          echo "=== Content of staging/*_signed.json ==="
-          for f in staging/*_signed.json; do
-            echo "--- $f ---"
-            cat "$f" | python -m json.tool
-            echo ""
-          done
-
-      - name: Upload signed files as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: signed-debug
-          path: staging/*_signed.json
-          retention-days: 1
+          echo "### 🔍 签名调试摘要" >> $GITHUB_STEP_SUMMARY
+          echo "Artifact: ${{ github.event.inputs.artifact_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "时间: $(date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_STEP_SUMMARY
+          echo "请查看上面的详细日志" >> $GITHUB_STEP_SUMMARY
