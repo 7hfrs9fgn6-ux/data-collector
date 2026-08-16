@@ -63,7 +63,7 @@ class SecurityChecker:
         """加载阻止规则 - 仅使用通用敏感词"""
         sec_config = self.config.get('security_check', {})
 
-        # ✅ 修复：只保留通用敏感词，移除所有 V 系统相关词汇
+        # ✅ 修复：只保留通用敏感词，移除所有相关词汇
         self.blocked_keywords = sec_config.get('blocked_keywords', [
             "secret",
             "password",
