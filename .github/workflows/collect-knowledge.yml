@@ -1,12 +1,13 @@
 # data-collector 知识采集工作流
 # 采集市场知识/经验/规律，打包成通用格式供私密库使用
-# 频率：每3小时一次（与市场数据采集频率一致）
+# 频率：每3小时一次
+# 输出到 staging/ 目录，与其他采集工作流保持一致
 
 name: 知识采集
 
 on:
   schedule:
-    - cron: '0 */3 * * *'   # 每3小时一次（UTC时间）
+    - cron: '0 */3 * * *'   # 每3小时一次
   workflow_dispatch:
 
 permissions:
@@ -36,16 +37,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install akshare yfinance pandas-datareader requests pyyaml feedparser beautifulsoup4 pandas numpy
 
-      - name: 创建输出目录
-        run: mkdir -p data/knowledge
+      - name: 创建暂存区目录
+        run: mkdir -p staging
 
       - name: 采集市场知识
         run: |
           echo "📊 开始采集市场知识..."
-          python scripts/collect_market_knowledge.py --output ./data/knowledge/
+          python scripts/collect_market_knowledge.py --output ./staging/
         continue-on-error: false
 
-      - name: 数据签名（payload 格式）
+      - name: 数据签名
         run: |
           echo "🔐 开始签名..."
           python scripts/sign.py
@@ -59,24 +60,24 @@ jobs:
 
       - name: 打印采集结果
         run: |
-          echo "📦 知识数据文件列表:"
-          ls -la data/knowledge/ 2>/dev/null || echo "   (暂无文件)"
+          echo "📦 暂存区文件列表:"
+          ls -la staging/ 2>/dev/null || echo "   (暂无文件)"
           echo ""
           echo "📊 最新知识包:"
-          ls -t data/knowledge/knowledge_package_*.json 2>/dev/null | head -1 || echo "   (暂无)"
+          ls -t staging/knowledge_package_*.json 2>/dev/null | head -1 || echo "   (暂无)"
 
-      - name: 上传 Artifact（供私密库拉取）
+      - name: 上传 Artifact
         uses: actions/upload-artifact@v4
         with:
           name: collected-data
-          path: data/knowledge/*.json
+          path: staging/*_signed.json
           retention-days: 7
 
-      - name: 提交到仓库（持久化存储）
+      - name: 提交到仓库
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/knowledge/*.json 2>/dev/null || true
+          git add staging/*.json 2>/dev/null || true
           if git diff --staged --quiet; then
             echo "ℹ️ 无新数据需要提交"
           else
@@ -88,6 +89,6 @@ jobs:
       - name: 清理旧文件（保留30天）
         run: |
           echo "🧹 清理 30 天前的知识数据..."
-          find data/knowledge/ -name "knowledge_package_*.json" -type f -mtime +30 -delete 2>/dev/null || true
-          REMAINING=$(ls data/knowledge/knowledge_package_*.json 2>/dev/null | wc -l)
+          find staging/ -name "knowledge_package_*.json" -type f -mtime +30 -delete 2>/dev/null || true
+          REMAINING=$(ls staging/knowledge_package_*.json 2>/dev/null | wc -l)
           echo "✅ 剩余文件: $REMAINING 个"
