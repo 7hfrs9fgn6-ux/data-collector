@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-公开库 - 市场知识采集模块
-版本： 1.0
-创建日期： 2026-08-19
-职责： 每日定时采集市场经验/知识/规律，打包成统一语言供私密库拉取
-
 ★ 核心设计：
   - 采集时间：每日 18:30 和 22:30
   - 采集内容：市场统计规律、季节性模式、板块轮动规律、外围传导规律
   - 输出格式：统一 JSON（knowledge_package_*.json）
   - 数据来源：联网搜索 + 结构化提取 + 历史数据统计
-  - 安全约束：不包含任何 V 系统信息
 
 ★ 采集维度：
   1. 季节性规律（各板块历史月度表现）
@@ -658,7 +652,7 @@ def generate_knowledge_package(
 # ============================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="V系统 市场知识采集模块")
+    parser = argparse.ArgumentParser(description="市场知识采集模块")
     parser.add_argument(
         '--time',
         type=str,
@@ -682,7 +676,7 @@ def main():
     )
 
     print("=" * 60)
-    print("📚 V系统 市场知识采集")
+    print("📚 市场知识采集")
     print(f"  时间: {args.time}")
     print("=" * 60)
 
