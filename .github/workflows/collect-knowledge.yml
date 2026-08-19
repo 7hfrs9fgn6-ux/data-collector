@@ -1,37 +1,52 @@
-name: 市场知识采集
+# ============================================================
+# 公开库 知识采集工作流
+# 用途： 采集市场知识/经验/规律，打包成通用格式供私密库使用
+# 版本： 1.0
+# 触发： 每天 18:30 和 22:30 定时运行，支持手动触发
+# ============================================================
+
+name: 知识采集
 
 on:
   # 定时触发：每天 18:30 和 22:30（北京时间）
+  # GitHub Actions 使用 UTC 时间，需要减去 8 小时
+  # 10:30 UTC = 18:30 CST
+  # 14:30 UTC = 22:30 CST
   schedule:
-    - cron: '30 10 * * *'   # 18:30 北京时间 = 10:30 UTC
-    - cron: '30 14 * * *'   # 22:30 北京时间 = 14:30 UTC
+    - cron: '30 10 * * *'   # 18:30 北京时间
+    - cron: '30 14 * * *'   # 22:30 北京时间
 
-  # 手动触发
+  # 手动触发（支持选择采集时间点）
   workflow_dispatch:
     inputs:
       time_slot:
-        description: '采集时段'
+        description: '采集时间点'
         required: true
         default: '1830'
         type: choice
         options:
           - '1830'
           - '2230'
+      custom_time:
+        description: '自定义时间（可选，格式: YYYY-MM-DD HH:MM:SS）'
+        required: false
+        type: string
+        placeholder: '2026-08-19 18:30:00'
 
-  # 代码推送时触发（仅当采集脚本变更）
-  push:
-    paths:
-      - 'scripts/collect_market_knowledge.py'
-      - '.github/workflows/collect-knowledge.yml'
-
-env:
-  TZ: 'Asia/Shanghai'
+# 权限配置（最小权限）
+permissions:
+  contents: write       # 用于提交采集结果到仓库
+  actions: read         # 用于读取工作流信息
 
 jobs:
   collect-knowledge:
     name: 采集市场知识
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
+    env:
+      TZ: 'Asia/Shanghai'
+      SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
 
     steps:
       # ---- 1. 检出代码 ----
@@ -48,109 +63,175 @@ jobs:
       # ---- 3. 安装依赖 ----
       - name: 📦 安装依赖
         run: |
-          python -m pip install --upgrade pip
-          pip install requests pandas pyyaml
-          pip install akshare yfinance || true
+          pip install --upgrade pip
+          pip install -r requirements.txt || true
+          # 确保脚本依赖的模块存在
+          pip install pandas requests pyyaml || true
 
-      # ---- 4. 创建工作目录 ----
-      - name: 📁 创建工作目录
+      # ---- 4. 创建输出目录 ----
+      - name: 📁 创建输出目录
         run: |
           mkdir -p data/knowledge
-          mkdir -p data/news
-          mkdir -p data/macro
-          mkdir -p data/sector
-          mkdir -p data/us_stock
+          mkdir -p logs
 
-      # ---- 5. 运行知识采集 ----
-      - name: 🧠 运行知识采集
+      # ---- 5. 执行知识采集 ----
+      - name: 🔍 执行知识采集
         id: collect
-        env:
-          DATA_SIGNING_KEY: ${{ secrets.DATA_SIGNING_KEY }}
         run: |
-          echo "🚀 开始市场知识采集..."
+          echo "=========================================="
+          echo "📊 知识采集任务开始"
+          echo "时间: $(date '+%Y-%m-%d %H:%M:%S')"
+          echo "=========================================="
           echo ""
-          
-          # 判断采集时段
-          if [ "${{ github.event.inputs.time_slot }}" == "2230" ] || [ "${{ github.event.schedule }}" == "30 14 * * *" ]; then
-            TIME_SLOT="2230"
+
+          # 确定采集时间
+          if [ "${{ github.event.inputs.custom_time }}" != "" ]; then
+            TIME_ARG="--time \"${{ github.event.inputs.custom_time }}\""
+          elif [ "${{ github.event.inputs.time_slot }}" == "1830" ]; then
+            TIME_ARG="--time \"$(date '+%Y-%m-%d 18:30:00')\""
+          elif [ "${{ github.event.inputs.time_slot }}" == "2230" ]; then
+            TIME_ARG="--time \"$(date '+%Y-%m-%d 22:30:00')\""
           else
-            TIME_SLOT="1830"
+            TIME_ARG=""
           fi
-          
-          echo "📌 采集时段: $TIME_SLOT"
-          echo ""
-          
+
           # 运行采集脚本
-          python scripts/collect_market_knowledge.py --time "$(date '+%Y-%m-%d %H:%M:%S')"
-          
-          # 检查生成的文件
-          echo ""
-          echo "📄 生成的文件列表:"
-          ls -la data/knowledge/ || echo "   ⚠️ 无文件生成"
-          
-          # 获取最新生成的文件名
-          LATEST_FILE=$(ls -t data/knowledge/knowledge_package_*.json 2>/dev/null | head -1)
-          if [ -n "$LATEST_FILE" ]; then
-            echo "✅ 最新文件: $LATEST_FILE"
-            echo "file_name=$(basename $LATEST_FILE)" >> $GITHUB_OUTPUT
-            echo "file_path=$LATEST_FILE" >> $GITHUB_OUTPUT
+          python scripts/collect_market_knowledge.py $TIME_ARG --output ./data/knowledge/
+
+          # 检查结果
+          if [ $? -eq 0 ]; then
+            echo "✅ 知识采集成功"
+            echo "status=success" >> $GITHUB_OUTPUT
+
+            # 获取生成的文件名
+            LATEST_FILE=$(ls -t data/knowledge/knowledge_package_*.json 2>/dev/null | head -1)
+            if [ -n "$LATEST_FILE" ]; then
+              echo "file=$LATEST_FILE" >> $GITHUB_OUTPUT
+              echo "📄 生成文件: $LATEST_FILE"
+            fi
           else
-            echo "⚠️ 未生成知识数据包"
+            echo "❌ 知识采集失败"
+            echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
 
-      # ---- 6. 提交并推送 ----
-      - name: 📤 提交并推送
-        if: success()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # ---- 6. 显示采集摘要 ----
+      - name: 📊 显示采集摘要
+        if: steps.collect.outputs.status == 'success' && steps.collect.outputs.file != ''
         run: |
+          echo "=========================================="
+          echo "📊 数据包摘要"
+          echo "=========================================="
+          FILE="${{ steps.collect.outputs.file }}"
+          if [ -f "$FILE" ]; then
+            echo "文件: $FILE"
+            echo "大小: $(du -h $FILE | cut -f1)"
+            echo ""
+            echo "📋 内容预览:"
+            head -50 $FILE
+          else
+            echo "⚠️ 文件不存在"
+          fi
+
+      # ---- 7. 上传 Artifact（供私密库拉取） ----
+      - name: 📤 上传 Artifact
+        if: steps.collect.outputs.status == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: collected-data
+          path: data/knowledge/*.json
+          retention-days: 7
+          if-no-files-found: error
+
+      # ---- 8. 提交到仓库（可选：用于持久化存储） ----
+      - name: 💾 提交到仓库
+        if: steps.collect.outputs.status == 'success'
+        run: |
+          # 配置 Git
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # 添加知识数据文件
-          git add data/knowledge/knowledge_package_*.json
-          
-          # 检查是否有变更
-          if git diff --cached --quiet; then
-            echo "ℹ️ 无变更需要提交"
-            exit 0
-          fi
-          
-          # 提交变更
-          TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
-          git commit -m "chore: 自动更新市场知识数据包 (${TIMESTAMP})"
-          
-          # 推送到仓库
-          git push origin main
-          
-          echo "✅ 已提交并推送知识数据包"
 
-      # ---- 7. 生成采集摘要 ----
-      - name: 📊 采集摘要
-        if: always()
+          # 添加知识数据
+          git add data/knowledge/*.json
+
+          # 检查是否有变更
+          if git diff --staged --quiet; then
+            echo "ℹ️ 无新数据需要提交"
+          else
+            git commit -m "📊 知识采集更新: $(date '+%Y-%m-%d %H:%M:%S')"
+            git push
+            echo "✅ 数据已提交到仓库"
+          fi
+
+      # ---- 9. 清理旧文件（保留最近30天） ----
+      - name: 🧹 清理旧文件
         run: |
           echo "=========================================="
-          echo "📊 市场知识采集摘要"
+          echo "🧹 清理 30 天前的知识数据"
           echo "=========================================="
-          echo ""
-          echo "采集时间: $(date '+%Y-%m-%d %H:%M:%S')"
-          echo "采集时段: ${{ github.event.inputs.time_slot || '定时' }}"
-          echo ""
-          
-          if [ -n "${{ steps.collect.outputs.file_name }}" ]; then
-            echo "✅ 生成文件: ${{ steps.collect.outputs.file_name }}"
-            echo "📂 文件路径: ${{ steps.collect.outputs.file_path }}"
-            
-            # 显示文件内容摘要
-            if [ -f "${{ steps.collect.outputs.file_path }}" ]; then
-              echo ""
-              echo "📄 文件摘要:"
-              cat "${{ steps.collect.outputs.file_path }}" | head -50 || echo "   ⚠️ 无法读取文件"
-            fi
-          else
-            echo "❌ 未生成知识数据包"
-          fi
-          
-          echo ""
+
+          # 删除 30 天前的知识文件
+          find data/knowledge/ -name "knowledge_package_*.json" -type f -mtime +30 -delete 2>/dev/null || true
+
+          # 统计剩余文件
+          REMAINING=$(ls data/knowledge/knowledge_package_*.json 2>/dev/null | wc -l)
+          echo "✅ 剩余文件: $REMAINING 个"
+
+      # ---- 10. 错误通知（仅手动触发时） ----
+      - name: 🔔 采集失败通知
+        if: steps.collect.outputs.status == 'failed' && github.event_name == 'workflow_dispatch'
+        run: |
           echo "=========================================="
+          echo "❌ 知识采集失败"
+          echo "=========================================="
+          echo "时间: $(date '+%Y-%m-%d %H:%M:%S')"
+          echo "分支: ${{ github.ref_name }}"
+          echo ""
+          echo "请检查日志查看详细错误信息"
+          exit 1
+
+  # ============================================================
+  # Job 2: 清理旧 Artifacts（每周运行）
+  # ============================================================
+  cleanup-artifacts:
+    name: 清理旧 Artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event.schedule == '30 14 * * *'  # 仅每周/每天随定时任务清理
+
+    steps:
+      - name: 🧹 清理旧 Artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // 获取所有 Artifacts
+            const { data: artifacts } = await github.rest.actions.listArtifactsForRepo({
+              owner,
+              repo,
+              per_page: 100
+            });
+
+            let deleted = 0;
+            const now = Date.now();
+            const retentionDays = 7;
+
+            for (const artifact of artifacts.artifacts) {
+              const createdAt = new Date(artifact.created_at).getTime();
+              const ageDays = (now - createdAt) / (1000 * 60 * 60 * 24);
+
+              // 删除超过 7 天的 Artifact
+              if (ageDays > retentionDays) {
+                await github.rest.actions.deleteArtifact({
+                  owner,
+                  repo,
+                  artifact_id: artifact.id
+                });
+                deleted++;
+                console.log(`🗑️ 已删除: ${artifact.name} (${artifact.id})`);
+              }
+            }
+
+            console.log(`✅ 已清理 ${deleted} 个旧 Artifacts`);
