@@ -1,7 +1,6 @@
 # data-collector 知识采集工作流
 # 采集市场知识/经验/规律，打包成通用格式供私密库使用
-# 频率：每3小时一次
-# 输出到 staging/ 目录，与其他采集工作流保持一致
+# ★ 前置依赖：先运行 sector 和 macro 采集，确保数据可用 ★
 
 name: 知识采集
 
@@ -21,7 +20,7 @@ env:
 jobs:
   collect-knowledge:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: 检出代码
@@ -40,13 +39,52 @@ jobs:
       - name: 创建暂存区目录
         run: mkdir -p staging
 
+      # ============================================================
+      # ★ 步骤1：运行市场数据采集（前置依赖）
+      # ============================================================
+      - name: 采集板块数据（前置依赖）
+        run: |
+          echo "📈 采集板块回撤数据..."
+          python scripts/collect_sector.py
+        continue-on-error: true
+
+      - name: 采集宏观数据（前置依赖）
+        run: |
+          echo "🌐 采集宏观数据..."
+          python scripts/collect_macro.py
+        continue-on-error: true
+
+      - name: 采集大宗商品（前置依赖）
+        run: |
+          echo "🛢️ 采集大宗商品..."
+          python scripts/collect_commodity.py
+        continue-on-error: true
+
+      - name: 采集美股指数（前置依赖）
+        run: |
+          echo "🇺🇸 采集美股指数..."
+          python scripts/collect_us_stock.py
+        continue-on-error: true
+
+      - name: 采集汇率（前置依赖）
+        run: |
+          echo "💵 采集汇率..."
+          python scripts/collect_forex.py
+        continue-on-error: true
+
+      # ============================================================
+      # ★ 步骤2：知识采集（基于上述数据）
+      # ============================================================
       - name: 采集市场知识
         run: |
           echo "📊 开始采集市场知识..."
           python scripts/collect_market_knowledge.py --output ./staging/
         continue-on-error: false
 
-      - name: 数据签名
+      # ============================================================
+      # ★ 步骤3：签名与检查
+      # ============================================================
+      - name: 数据签名（扫描所有 staging 文件）
         run: |
           echo "🔐 开始签名..."
           python scripts/sign.py
@@ -58,13 +96,19 @@ jobs:
           python scripts/security_check.py
         continue-on-error: true
 
-      - name: 打印采集结果
+      # ============================================================
+      # ★ 步骤4：输出与上传
+      # ============================================================
+      - name: 打印暂存区状态
         run: |
           echo "📦 暂存区文件列表:"
-          ls -la staging/ 2>/dev/null || echo "   (暂无文件)"
+          ls -la staging/
           echo ""
           echo "📊 最新知识包:"
           ls -t staging/knowledge_package_*.json 2>/dev/null | head -1 || echo "   (暂无)"
+          echo ""
+          echo "📊 所有签名文件:"
+          ls -t staging/*_signed.json 2>/dev/null | head -5 || echo "   (暂无)"
 
       - name: 上传 Artifact
         uses: actions/upload-artifact@v4
