@@ -1,6 +1,6 @@
 # data-collector 知识采集工作流
-# 采集市场知识/经验/规律，打包成通用格式供私密库使用
-# ★ 前置依赖：先运行 sector 和 macro 采集，确保数据可用 ★
+# 基于最新市场数据生成知识包
+# ★ 不重复采集，而是复用 market-collect.yml 的产出 ★
 
 name: 知识采集
 
@@ -20,7 +20,7 @@ env:
 jobs:
   collect-knowledge:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     steps:
       - name: 检出代码
@@ -40,40 +40,29 @@ jobs:
         run: mkdir -p staging
 
       # ============================================================
-      # ★ 步骤1：运行市场数据采集（前置依赖）
+      # ★ 关键：下载最新的 market-data Artifact ★
       # ============================================================
-      - name: 采集板块数据（前置依赖）
-        run: |
-          echo "📈 采集板块回撤数据..."
-          python scripts/collect_sector.py
+      - name: 下载最新市场数据 Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: market-data
+          path: staging/
         continue-on-error: true
 
-      - name: 采集宏观数据（前置依赖）
+      - name: 检查数据文件
         run: |
-          echo "🌐 采集宏观数据..."
-          python scripts/collect_macro.py
-        continue-on-error: true
-
-      - name: 采集大宗商品（前置依赖）
-        run: |
-          echo "🛢️ 采集大宗商品..."
-          python scripts/collect_commodity.py
-        continue-on-error: true
-
-      - name: 采集美股指数（前置依赖）
-        run: |
-          echo "🇺🇸 采集美股指数..."
-          python scripts/collect_us_stock.py
-        continue-on-error: true
-
-      - name: 采集汇率（前置依赖）
-        run: |
-          echo "💵 采集汇率..."
-          python scripts/collect_forex.py
-        continue-on-error: true
+          echo "📦 下载的市场数据文件列表:"
+          ls -la staging/ 2>/dev/null || echo "   ⚠️ 无市场数据文件"
+          echo ""
+          # 检查是否有必要的数据文件
+          if ls staging/*_signed.json 2>/dev/null | grep -q .; then
+            echo "✅ 市场数据可用"
+          else
+            echo "⚠️ 市场数据不可用，将使用默认值"
+          fi
 
       # ============================================================
-      # ★ 步骤2：知识采集（基于上述数据）
+      # ★ 运行知识采集（读取 staging/ 数据文件） ★
       # ============================================================
       - name: 采集市场知识
         run: |
@@ -82,9 +71,9 @@ jobs:
         continue-on-error: false
 
       # ============================================================
-      # ★ 步骤3：签名与检查
+      # ★ 签名与检查 ★
       # ============================================================
-      - name: 数据签名（扫描所有 staging 文件）
+      - name: 数据签名
         run: |
           echo "🔐 开始签名..."
           python scripts/sign.py
@@ -97,7 +86,7 @@ jobs:
         continue-on-error: true
 
       # ============================================================
-      # ★ 步骤4：输出与上传
+      # ★ 输出与上传 ★
       # ============================================================
       - name: 打印暂存区状态
         run: |
