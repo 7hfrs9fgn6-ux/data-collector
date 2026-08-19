@@ -2,13 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 历史数据采集模块
-版本： 1.0
-创建日期： 2026-08-19
+版本： 1.1
+更新日期： 2026-08-19
 职责： 采集几十年历史行情、宏观、事件数据
 
 ★ 采集内容：
   1. 历史行情数据 - 上证/深证/创业板 日线（30年）
-  2. 历史宏观数据 - GDP、CPI、PPI、PMI、利率、社融
+  2. 历史宏观数据 - GDP、CPI、PMI
   3. 历史事件数据 - 重大政策、经济事件
   4. 历史板块数据 - 申万一级行业历史表现
 
@@ -46,17 +46,6 @@ STAGING_DIR = os.path.join(PROJECT_ROOT, "staging")
 def fetch_historical_market(years: int = 30) -> Dict[str, Any]:
     """
     采集历史行情数据（上证、深证、创业板）
-
-    Returns:
-        {
-            "type": "historical_market",
-            "period": {"start": "1990-01-01", "end": "2026-08-19"},
-            "data": {
-                "上证指数": [{"date": "1990-12-19", "close": 99.98, ...}, ...],
-                "深证成指": [...],
-                "创业板指": [...]
-            }
-        }
     """
     logger.info(f"📈 开始采集历史行情数据 (回溯 {years} 年)")
 
@@ -76,32 +65,83 @@ def fetch_historical_market(years: int = 30) -> Dict[str, Any]:
     try:
         import akshare as ak
     except ImportError:
-        logger.error("❌ akshare 未安装，无法采集历史行情数据")
+        logger.error("❌ akshare 未安装")
         return result
 
+    # 指数列表：名称 -> 代码前缀
     indices = [
-        ("上证指数", "000001"),
-        ("深证成指", "399001"),
-        ("创业板指", "399006"),
+        ("上证指数", "sh000001"),
+        ("深证成指", "sz399001"),
+        ("创业板指", "sz399006"),
     ]
 
-    for name, code in indices:
+    for name, symbol in indices:
         try:
-            logger.info(f"   采集 {name} ({code})...")
-            df = ak.stock_zh_index_daily(symbol=f"sh{code}")
+            logger.info(f"   采集 {name} ({symbol})...")
+            df = ak.stock_zh_index_daily(symbol=symbol)
 
             if df is not None and not df.empty:
-                # 转换为字典列表
+                # 智能检测列名
+                date_col = None
+                for col in df.columns:
+                    if 'date' in col.lower():
+                        date_col = col
+                        break
+
+                if date_col is None:
+                    logger.warning(f"   ⚠️ {name}: 未找到日期列，跳过")
+                    continue
+
                 data = []
                 for _, row in df.iterrows():
-                    # 只保留必要字段
+                    date_val = row.get(date_col)
+                    if date_val is None:
+                        continue
+
+                    # 日期格式化
+                    if hasattr(date_val, 'strftime'):
+                        date_str = date_val.strftime("%Y-%m-%d")
+                    else:
+                        date_str = str(date_val)[:10]
+
+                    # 提取价格数据（尝试多种列名）
+                    close = 0
+                    for col in ['close', '收盘', '收盘价']:
+                        if col in df.columns and row.get(col) is not None:
+                            close = float(row.get(col, 0))
+                            break
+
+                    open_price = 0
+                    for col in ['open', '开盘', '开盘价']:
+                        if col in df.columns and row.get(col) is not None:
+                            open_price = float(row.get(col, 0))
+                            break
+
+                    high = 0
+                    for col in ['high', '最高', '最高价']:
+                        if col in df.columns and row.get(col) is not None:
+                            high = float(row.get(col, 0))
+                            break
+
+                    low = 0
+                    for col in ['low', '最低', '最低价']:
+                        if col in df.columns and row.get(col) is not None:
+                            low = float(row.get(col, 0))
+                            break
+
+                    volume = 0
+                    for col in ['volume', '成交量']:
+                        if col in df.columns and row.get(col) is not None:
+                            volume = float(row.get(col, 0))
+                            break
+
                     record = {
-                        "date": row.get('date', '').strftime("%Y-%m-%d") if hasattr(row.get('date', ''), 'strftime') else str(row.get('date', '')),
-                        "open": float(row.get('open', 0)),
-                        "high": float(row.get('high', 0)),
-                        "low": float(row.get('low', 0)),
-                        "close": float(row.get('close', 0)),
-                        "volume": float(row.get('volume', 0))
+                        "date": date_str,
+                        "open": open_price,
+                        "high": high,
+                        "low": low,
+                        "close": close,
+                        "volume": volume
                     }
                     data.append(record)
 
@@ -116,7 +156,6 @@ def fetch_historical_market(years: int = 30) -> Dict[str, Any]:
             else:
                 logger.warning(f"   ⚠️ {name}: 无数据")
 
-            # 限流
             time.sleep(0.5)
 
         except Exception as e:
@@ -131,18 +170,7 @@ def fetch_historical_market(years: int = 30) -> Dict[str, Any]:
 
 def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
     """
-    采集历史宏观数据
-
-    Returns:
-        {
-            "type": "historical_macro",
-            "period": {...},
-            "data": {
-                "GDP": [{"year": 1990, "value": ...}, ...],
-                "CPI": [{"date": "1990-01", "value": ...}, ...],
-                ...
-            }
-        }
+    采集历史宏观数据（GDP、CPI、PMI）
     """
     logger.info(f"🏛️ 开始采集历史宏观数据 (回溯 {years} 年)")
 
@@ -162,23 +190,54 @@ def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
     try:
         import akshare as ak
     except ImportError:
-        logger.error("❌ akshare 未安装，无法采集历史宏观数据")
+        logger.error("❌ akshare 未安装")
         return result
 
-    # ---- GDP ----
+    # ---- GDP（使用 maco_china_gdp） ----
     try:
         logger.info("   采集 GDP 数据...")
-        df = ak.macro_china_gdp_yearly()
-        if df is not None and not df.empty:
+        # 尝试多个可能的接口
+        gdp_data = None
+        try:
+            gdp_data = ak.macro_china_gdp()
+        except Exception:
+            pass
+
+        if gdp_data is None or gdp_data.empty:
+            try:
+                gdp_data = ak.macro_china_gdp_yearly()
+            except Exception:
+                pass
+
+        if gdp_data is not None and not gdp_data.empty:
             data = []
-            for _, row in df.iterrows():
-                year = str(row.get('年份', ''))
+            # 智能检测列名
+            year_col = None
+            value_col = None
+            growth_col = None
+            for col in gdp_data.columns:
+                if '年' in col or '年份' in col or 'year' in col.lower():
+                    year_col = col
+                if 'gdp' in col.lower() or '国内生产总值' in col or '总值' in col:
+                    value_col = col
+                if '增长' in col or '增速' in col or 'growth' in col.lower():
+                    growth_col = col
+
+            for _, row in gdp_data.iterrows():
+                year = str(row.get(year_col, '')) if year_col else ''
                 if year:
-                    data.append({
-                        "year": year,
-                        "gdp_yi": float(row.get('国内生产总值_亿元', 0)),
-                        "growth": float(row.get('国内生产总值增长率_%', 0))
-                    })
+                    record = {"year": year}
+                    if value_col:
+                        record["gdp_yi"] = float(row.get(value_col, 0))
+                    if growth_col:
+                        record["growth"] = float(row.get(growth_col, 0))
+                    data.append(record)
+
+            # 限制数据量
+            if years > 0 and data:
+                cutoff_year = datetime.now().year - years
+                data = [d for d in data if int(d.get('year', 0)) >= cutoff_year]
+
             result["data"]["GDP"] = data
             logger.info(f"   ✅ GDP: {len(data)} 条记录")
         else:
@@ -192,15 +251,33 @@ def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
         df = ak.macro_china_cpi_monthly()
         if df is not None and not df.empty:
             data = []
+            date_col = None
+            cpi_col = None
+            yoy_col = None
+            for col in df.columns:
+                if '日期' in col or 'date' in col.lower():
+                    date_col = col
+                if '当月' in col or 'cpi' in col.lower():
+                    cpi_col = col
+                if '同比' in col or '增长' in col:
+                    yoy_col = col
+
             for _, row in df.iterrows():
-                date = str(row.get('日期', ''))
-                if date:
-                    data.append({
-                        "date": date,
-                        "cpi": float(row.get('当月', 0)),
-                        "cpi_year_over_year": float(row.get('同比增长', 0))
-                    })
-            # 限制数据量
+                date_val = row.get(date_col) if date_col else None
+                if date_val is None:
+                    continue
+                if hasattr(date_val, 'strftime'):
+                    date_str = date_val.strftime("%Y-%m")
+                else:
+                    date_str = str(date_val)[:7]
+
+                record = {"date": date_str}
+                if cpi_col:
+                    record["cpi"] = float(row.get(cpi_col, 0))
+                if yoy_col:
+                    record["cpi_yoy"] = float(row.get(yoy_col, 0))
+                data.append(record)
+
             if years > 0 and data:
                 cutoff_date = datetime.now() - timedelta(days=years * 365)
                 cutoff_str = cutoff_date.strftime("%Y-%m")
@@ -219,40 +296,39 @@ def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
         df = ak.macro_china_pmi_yearly()
         if df is not None and not df.empty:
             data = []
+            date_col = None
+            pmi_col = None
+            for col in df.columns:
+                if '日期' in col or 'date' in col.lower():
+                    date_col = col
+                if 'pmi' in col.lower() or 'PMI' in col:
+                    pmi_col = col
+
             for _, row in df.iterrows():
-                date = str(row.get('日期', ''))
-                if date:
-                    data.append({
-                        "date": date,
-                        "pmi": float(row.get('PMI', 0))
-                    })
+                date_val = row.get(date_col) if date_col else None
+                if date_val is None:
+                    continue
+                if hasattr(date_val, 'strftime'):
+                    date_str = date_val.strftime("%Y-%m")
+                else:
+                    date_str = str(date_val)[:7]
+
+                record = {"date": date_str}
+                if pmi_col:
+                    record["pmi"] = float(row.get(pmi_col, 0))
+                data.append(record)
+
+            if years > 0 and data:
+                cutoff_date = datetime.now() - timedelta(days=years * 365)
+                cutoff_str = cutoff_date.strftime("%Y-%m")
+                data = [d for d in data if d.get('date', '') >= cutoff_str]
+
             result["data"]["PMI"] = data
             logger.info(f"   ✅ PMI: {len(data)} 条记录")
         else:
             logger.warning("   ⚠️ PMI: 无数据")
     except Exception as e:
         logger.warning(f"   ⚠️ PMI: 采集失败 - {e}")
-
-    # ---- 利率 ----
-    try:
-        logger.info("   采集利率数据...")
-        df = ak.macro_china_interest_rate()
-        if df is not None and not df.empty:
-            data = []
-            for _, row in df.iterrows():
-                date = str(row.get('日期', ''))
-                if date:
-                    data.append({
-                        "date": date,
-                        "rate_1y": float(row.get('一年期存款利率', 0)) if row.get('一年期存款利率') else None,
-                        "rate_5y": float(row.get('五年期贷款利率', 0)) if row.get('五年期贷款利率') else None
-                    })
-            result["data"]["InterestRate"] = data
-            logger.info(f"   ✅ 利率: {len(data)} 条记录")
-        else:
-            logger.warning("   ⚠️ 利率: 无数据")
-    except Exception as e:
-        logger.warning(f"   ⚠️ 利率: 采集失败 - {e}")
 
     return result
 
@@ -264,17 +340,6 @@ def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
 def fetch_historical_events(years: int = 30) -> Dict[str, Any]:
     """
     采集历史事件数据（政策、经济事件）
-
-    注：由于历史事件数据来源有限，这里使用预置的公开事件库
-    实际生产环境中可接入 Wikipedia API 或新闻数据库
-
-    Returns:
-        {
-            "type": "historical_events",
-            "period": {...},
-            "data": [...],
-            "metadata": {...}
-        }
     """
     logger.info(f"📰 开始采集历史事件数据 (回溯 {years} 年)")
 
@@ -291,31 +356,34 @@ def fetch_historical_events(years: int = 30) -> Dict[str, Any]:
         }
     }
 
-    # 预置公开事件数据（来自公开历史记录）
+    # 预置公开事件数据
     events = [
-        # 中国重大政策事件
+        {"date": "1990-12-19", "title": "上海证券交易所正式开业", "type": "policy"},
+        {"date": "1991-04-11", "title": "深圳证券交易所正式开业", "type": "policy"},
+        {"date": "1992-01-01", "title": "邓小平南巡讲话", "type": "policy"},
+        {"date": "1996-12-16", "title": "涨跌停板制度实施", "type": "policy"},
         {"date": "1998-06-01", "title": "亚洲金融危机后中国启动积极财政政策", "type": "policy"},
         {"date": "2001-12-11", "title": "中国加入世界贸易组织（WTO）", "type": "policy"},
+        {"date": "2005-04-29", "title": "股权分置改革启动", "type": "policy"},
         {"date": "2005-07-21", "title": "人民币汇率制度改革", "type": "policy"},
+        {"date": "2008-09-15", "title": "雷曼兄弟破产引发全球金融危机", "type": "event"},
         {"date": "2008-11-09", "title": "四万亿经济刺激计划", "type": "policy"},
+        {"date": "2010-04-16", "title": "股指期货正式上市", "type": "policy"},
         {"date": "2014-11-17", "title": "沪港通正式开通", "type": "policy"},
-        {"date": "2015-06-01", "title": "A股纳入MSCI指数过程开始", "type": "policy"},
+        {"date": "2015-06-12", "title": "A股牛市见顶（5178点）", "type": "event"},
         {"date": "2016-01-01", "title": "熔断机制实施", "type": "policy"},
+        {"date": "2016-12-05", "title": "深港通正式开通", "type": "policy"},
         {"date": "2018-03-22", "title": "中美贸易摩擦开始", "type": "policy"},
-        {"date": "2019-07-22", "title": "科创板正式开市", "type": "policy"},
+        {"date": "2019-06-13", "title": "科创板正式开板", "type": "policy"},
         {"date": "2020-01-23", "title": "新冠疫情爆发", "type": "event"},
+        {"date": "2020-03-09", "title": "全球股市暴跌", "type": "event"},
+        {"date": "2021-09-02", "title": "北京证券交易所宣布设立", "type": "policy"},
+        {"date": "2022-02-24", "title": "俄乌冲突爆发", "type": "event"},
         {"date": "2023-08-28", "title": "印花税减半征收", "type": "policy"},
         {"date": "2024-02-05", "title": "央行降准0.5个百分点", "type": "policy"},
-
-        # 全球重要事件
-        {"date": "2000-03-10", "title": "互联网泡沫破裂", "type": "event"},
-        {"date": "2008-09-15", "title": "雷曼兄弟破产引发全球金融危机", "type": "event"},
-        {"date": "2010-05-06", "title": "美股闪崩（闪电崩盘）", "type": "event"},
-        {"date": "2020-03-09", "title": "全球股市暴跌（新冠冲击）", "type": "event"},
-        {"date": "2022-02-24", "title": "俄乌冲突爆发", "type": "event"},
+        {"date": "2024-09-24", "title": "央行宣布降息降准组合政策", "type": "policy"},
     ]
 
-    # 过滤最近 years 年
     cutoff_date = datetime.now() - timedelta(days=years * 365)
     cutoff_str = cutoff_date.strftime("%Y-%m-%d")
 
@@ -331,22 +399,12 @@ def fetch_historical_events(years: int = 30) -> Dict[str, Any]:
 
 
 # ============================================================
-# 4. 历史板块数据
+# 4. 历史板块数据（修复版）
 # ============================================================
 
 def fetch_historical_sector(years: int = 20) -> Dict[str, Any]:
     """
-    采集历史板块数据（申万一级行业历史表现）
-
-    Returns:
-        {
-            "type": "historical_sector",
-            "period": {...},
-            "data": {
-                "电子": [{"date": "...", "close": ..., "change": ...}, ...],
-                ...
-            }
-        }
+    采集历史板块数据（使用申万指数历史接口）
     """
     logger.info(f"📊 开始采集历史板块数据 (回溯 {years} 年)")
 
@@ -366,33 +424,66 @@ def fetch_historical_sector(years: int = 20) -> Dict[str, Any]:
     try:
         import akshare as ak
     except ImportError:
-        logger.error("❌ akshare 未安装，无法采集历史板块数据")
+        logger.error("❌ akshare 未安装")
         return result
 
-    # 申万一级行业
-    sectors = [
-        "电子", "计算机", "通信", "传媒", "医药生物",
-        "食品饮料", "家用电器", "电力设备", "汽车", "国防军工",
-        "银行", "非银金融", "公用事业", "煤炭", "石油石化"
-    ]
+    # 申万一级行业代码映射
+    sector_codes = {
+        "电子": "801080",
+        "计算机": "801750",
+        "通信": "801770",
+        "传媒": "801760",
+        "医药生物": "801150",
+        "食品饮料": "801120",
+        "家用电器": "801110",
+        "电力设备": "801730",
+        "汽车": "801880",
+        "国防军工": "801740",
+        "银行": "801780",
+        "非银金融": "801790",
+        "公用事业": "801160",
+        "煤炭": "801950",
+        "石油石化": "801960"
+    }
 
-    for sector in sectors:
+    for sector, code in sector_codes.items():
         try:
-            logger.info(f"   采集 {sector} 历史数据...")
-            # 使用申万指数代码
-            df = ak.stock_zh_index_daily_sw(symbol=sector)
+            logger.info(f"   采集 {sector} 历史数据 ({code})...")
+
+            # 使用申万指数历史数据
+            df = ak.index_hist_sw(symbol=code)
 
             if df is not None and not df.empty:
                 data = []
+                date_col = None
+                close_col = None
+                for col in df.columns:
+                    if 'date' in col.lower():
+                        date_col = col
+                    if 'close' in col.lower() or '收盘' in col:
+                        close_col = col
+
+                if date_col is None:
+                    logger.warning(f"   ⚠️ {sector}: 未找到日期列")
+                    continue
+
                 for _, row in df.iterrows():
-                    date = row.get('date', '')
-                    if hasattr(date, 'strftime'):
-                        date = date.strftime("%Y-%m-%d")
+                    date_val = row.get(date_col)
+                    if date_val is None:
+                        continue
+
+                    if hasattr(date_val, 'strftime'):
+                        date_str = date_val.strftime("%Y-%m-%d")
+                    else:
+                        date_str = str(date_val)[:10]
+
+                    close_price = 0
+                    if close_col:
+                        close_price = float(row.get(close_col, 0))
 
                     record = {
-                        "date": date,
-                        "close": float(row.get('close', 0)),
-                        "change": float(row.get('pct_chg', 0)) if row.get('pct_chg') is not None else 0
+                        "date": date_str,
+                        "close": close_price
                     }
                     data.append(record)
 
@@ -461,7 +552,7 @@ def main():
         save_historical_data(data, 'events')
 
     if args.type in ['sector', 'all']:
-        data = fetch_historical_sector(min(args.years, 20))  # 板块数据最多20年
+        data = fetch_historical_sector(min(args.years, 20))
         save_historical_data(data, 'sector')
 
     logger.info("✅ 历史数据采集完成")
