@@ -5,6 +5,7 @@
 版本： 1.0
 创建日期： 2026-08-19
 职责： 从互联网采集市场知识/经验/规律，打包成统一格式供下游使用
+★ 输出到 staging/ 目录，与公开库其他采集脚本保持一致 ★
 
 ★ 采集内容：
   1. 市场统计数据（涨跌分布、板块表现、量价特征）
@@ -14,11 +15,12 @@
   5. 市场情绪指标（量比中位数、板块上涨占比等）
 
 ★ 输出格式：
-  knowledge_package_{timestamp}.json
-  统一JSON格式 + HMAC-SHA256签名
+  knowledge_package_{timestamp}.json（staging/ 目录）
+  后续由 sign.py 统一签名
 
 ★ 使用方式：
-  python collect_market_knowledge.py --time 1830
+  python collect_market_knowledge.py
+  python collect_market_knowledge.py --output ./staging/
 """
 
 import os
@@ -26,8 +28,6 @@ import sys
 import json
 import argparse
 import logging
-import hashlib
-import hmac
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from collections import Counter
@@ -52,9 +52,6 @@ try:
 except ImportError:
     logger.warning("⚠️ 部分采集模块不可用，将使用降级数据")
     MODULES_AVAILABLE = False
-
-# 签名密钥（从环境变量读取）
-SIGNING_KEY = os.environ.get("DATA_SIGNING_KEY", "")
 
 # 板块列表（15个申万一级行业）
 SECTORS = [
@@ -210,7 +207,6 @@ def collect_market_summary() -> Dict[str, Any]:
     }
 
     try:
-        # 从板块数据获取
         if MODULES_AVAILABLE:
             sector_data = fetch_sector_data()
             if sector_data and "data" in sector_data:
@@ -307,23 +303,19 @@ def collect_external_impact() -> Dict[str, Any]:
         if MODULES_AVAILABLE:
             macro_data = fetch_macro_data()
             if macro_data:
-                # 美股
                 us = macro_data.get("us_market", {})
                 for idx in US_INDICES:
                     if idx in us:
                         result["us_market"][idx] = us[idx].get("change_pct", 0)
 
-                # A50
                 a50 = macro_data.get("a50_futures", {})
                 result["a50"] = a50.get("change_pct", 0)
 
-                # 大宗商品
                 commodities = macro_data.get("commodities", {})
                 for c in COMMODITIES:
                     if c in commodities:
                         result["commodities"][c] = commodities[c].get("change_pct", 0)
 
-                # 汇率
                 forex = macro_data.get("forex", {})
                 if "美元兑人民币" in forex:
                     result["forex"]["usd_cny"] = forex["美元兑人民币"].get("price", 0)
@@ -341,7 +333,6 @@ def collect_external_impact() -> Dict[str, Any]:
         elif us_scores <= -2:
             result["overall_bias"] = "偏冷"
         else:
-            # 结合 A50
             if result["a50"] > 0.3:
                 result["overall_bias"] = "偏暖"
             elif result["a50"] < -0.3:
@@ -363,7 +354,6 @@ def detect_market_patterns(
     patterns = []
 
     try:
-        # 1. 普涨/普跌模式
         up = market_summary.get("up_sectors", 0)
         down = market_summary.get("down_sectors", 0)
         total = up + down + market_summary.get("flat_sectors", 0)
@@ -374,14 +364,12 @@ def detect_market_patterns(
             elif down / total > 0.7:
                 patterns.append(f"普跌格局 ({down}/{total} 个板块下跌)")
 
-        # 2. 板块轮动模式
         strongest = market_summary.get("strongest_sector", "")
         weakest = market_summary.get("weakest_sector", "")
 
         if strongest and weakest:
             patterns.append(f"强弱分化: {strongest} 领涨, {weakest} 领跌")
 
-        # 3. 科技板块模式
         tech_sectors = ["电子", "计算机", "通信"]
         tech_up = 0
         for s in tech_sectors:
@@ -394,7 +382,6 @@ def detect_market_patterns(
         elif tech_up == 0:
             patterns.append("科技板块集体走弱")
 
-        # 4. 防御板块模式
         def_sectors = ["银行", "公用事业", "煤炭"]
         def_up = 0
         for s in def_sectors:
@@ -404,9 +391,6 @@ def detect_market_patterns(
 
         if def_up >= 2:
             patterns.append("防御板块走强, 市场谨慎")
-
-        # 5. 连续强势模式（从历史判断）
-        # 这里简化，实际可从历史数据读取
 
     except Exception as e:
         logger.warning(f"模式检测异常: {e}")
@@ -422,7 +406,6 @@ def find_similar_scenarios(
     scenarios = []
 
     try:
-        # 构建当前场景特征
         current_features = {
             "breadth": market_summary.get("sector_breadth", 0.5),
             "index_change": market_summary.get("index_change", 0),
@@ -430,8 +413,6 @@ def find_similar_scenarios(
             "weakest_sector": market_summary.get("weakest_sector", "")
         }
 
-        # 从历史数据中匹配（简化版，实际可从 CSV 读取）
-        # 这里返回预置的参考场景
         reference_scenarios = [
             {
                 "date": "2024-08-15",
@@ -453,27 +434,22 @@ def find_similar_scenarios(
             }
         ]
 
-        # 根据当前特征调整相似度
         if current_features["breadth"] > 0.6:
-            # 普涨场景
             for s in reference_scenarios:
                 if "普涨" in s["description"] or "领涨" in s["description"]:
                     s["similarity"] = min(0.95, s["similarity"] + 0.15)
                     scenarios.append(s)
         elif current_features["breadth"] < 0.4:
-            # 普跌场景
             for s in reference_scenarios:
                 if "走弱" in s["description"] or "防御" in s["description"]:
                     s["similarity"] = min(0.95, s["similarity"] + 0.15)
                     scenarios.append(s)
         else:
-            # 震荡场景
             for s in reference_scenarios:
                 if "震荡" in s["description"]:
                     s["similarity"] = min(0.95, s["similarity"] + 0.10)
                     scenarios.append(s)
 
-        # 去重并排序
         seen = set()
         unique_scenarios = []
         for s in scenarios:
@@ -487,7 +463,7 @@ def find_similar_scenarios(
     except Exception as e:
         logger.warning(f"相似场景识别异常: {e}")
 
-    return scenarios[:5]  # 最多返回5个
+    return scenarios[:5]
 
 
 def extract_key_events() -> List[str]:
@@ -498,7 +474,6 @@ def extract_key_events() -> List[str]:
         if MODULES_AVAILABLE:
             news_data = fetch_news_aggregate()
             if news_data and "articles" in news_data:
-                # 提取重要新闻（含政策、公告等关键词）
                 keywords = ["政策", "发布", "公告", "会议", "央行", "国务院", "证监会", "降息", "降准"]
                 for article in news_data["articles"][:20]:
                     title = article.get("title", "")
@@ -511,7 +486,7 @@ def extract_key_events() -> List[str]:
     except Exception as e:
         logger.warning(f"关键事件提取异常: {e}")
 
-    return events[:5]  # 最多返回5条
+    return events[:5]
 
 
 def calculate_confidence(
@@ -528,7 +503,6 @@ def calculate_confidence(
     }
 
     try:
-        # 市场摘要置信度：基于数据完整性
         completeness = 0
         if market_summary.get("sector_breadth", 0) > 0:
             completeness += 1
@@ -538,16 +512,13 @@ def calculate_confidence(
             completeness += 1
         result["market_summary"] = round(0.4 + completeness * 0.2, 3)
 
-        # 板块表现置信度：基于数据覆盖
         if sector_performance:
             coverage = len(sector_performance) / len(SECTORS)
             result["sector_performance"] = round(0.4 + min(0.5, coverage * 0.8), 3)
 
-        # 模式检测置信度：基于模式数量
         if patterns:
             result["patterns_detected"] = round(min(0.9, 0.5 + len(patterns) * 0.1), 3)
 
-        # 整体置信度
         scores = [
             result["market_summary"],
             result["sector_performance"],
@@ -564,29 +535,24 @@ def calculate_confidence(
 def calculate_quality_score(data_package: Dict[str, Any]) -> float:
     """计算数据包质量评分（0-1）"""
     score = 0.0
-    total = 0
 
     try:
         package = data_package.get("knowledge_package", {})
 
-        # 1. 市场摘要完整性 (30%)
         summary = package.get("market_summary", {})
         summary_fields = ["sector_breadth", "strongest_sector", "weakest_sector"]
         present = sum(1 for f in summary_fields if summary.get(f))
         score += present / len(summary_fields) * 0.3
 
-        # 2. 板块表现覆盖率 (30%)
         sector_perf = package.get("sector_performance", {})
         coverage = len(sector_perf) / len(SECTORS)
         score += min(1.0, coverage) * 0.3
 
-        # 3. 模式与场景数量 (20%)
         patterns = package.get("patterns_detected", [])
         scenarios = package.get("similar_historical_scenarios", [])
         items = len(patterns) + len(scenarios)
         score += min(1.0, items / 10) * 0.2
 
-        # 4. 外围数据完整性 (20%)
         external = package.get("external_impact", {})
         us_count = len(external.get("us_market", {}))
         score += min(1.0, us_count / 4) * 0.2
@@ -598,40 +564,28 @@ def calculate_quality_score(data_package: Dict[str, Any]) -> float:
 
 
 # ============================================================
-# 3. 签名与保存
+# 3. 保存（不签名，由 sign.py 统一处理）
 # ============================================================
 
-def sign_data(data: Dict[str, Any]) -> str:
-    """使用 HMAC-SHA256 签名"""
-    if not SIGNING_KEY:
-        logger.warning("⚠️ 签名密钥未设置，使用空密钥")
-        key = b""
-    else:
-        key = SIGNING_KEY.encode('utf-8')
+def save_knowledge_package(data: Dict[str, Any], output_dir: str = "./staging/"):
+    """
+    保存知识数据包到文件（不签名，由 sign.py 统一处理）
 
-    data_str = json.dumps(data, sort_keys=True, ensure_ascii=False)
-    signature = hmac.new(key, data_str.encode('utf-8'), hashlib.sha256).hexdigest()
-    return signature
-
-
-def save_knowledge_package(data: Dict[str, Any], output_dir: str = "./data/knowledge/"):
-    """保存知识数据包到文件"""
+    Args:
+        data: 数据包
+        output_dir: 输出目录
+    """
     try:
         os.makedirs(output_dir, exist_ok=True)
 
-        # 生成文件名
         now = datetime.now()
         timestamp = now.strftime("%Y%m%d_%H%M%S")
         filename = f"knowledge_package_{timestamp}.json"
         filepath = os.path.join(output_dir, filename)
 
-        # 添加签名
-        data_to_save = data.copy()
-        data_to_save["signature"] = sign_data(data)
-
-        # 保存
+        # 直接保存原始数据（不含签名）
         with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(data_to_save, f, ensure_ascii=False, indent=2)
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
         logger.info(f"✅ 数据包已保存: {filepath}")
         return filepath
@@ -649,16 +603,14 @@ def main():
     parser = argparse.ArgumentParser(description='采集市场知识数据包')
     parser.add_argument('--time', type=str, default=None,
                        help='采集时间戳 (YYYY-MM-DD HH:MM:SS)')
-    parser.add_argument('--output', type=str, default="./data/knowledge/",
-                       help='输出目录')
+    parser.add_argument('--output', type=str, default="./staging/",
+                       help='输出目录（默认: ./staging/）')
     parser.add_argument('--skip-save', action='store_true',
                        help='跳过保存（仅打印）')
     args = parser.parse_args()
 
-    # 采集数据
     data = collect_market_knowledge(args.time)
 
-    # 打印摘要
     print("\n" + "=" * 60)
     print("📊 市场知识数据包摘要")
     print("=" * 60)
@@ -670,7 +622,6 @@ def main():
     print(f"质量评分: {data['metadata']['quality_score']:.2f}")
     print("=" * 60)
 
-    # 保存
     if not args.skip_save:
         save_knowledge_package(data, args.output)
     else:
