@@ -1,140 +1,82 @@
-# ============================================================
-# 公开库 知识采集工作流
-# 用途： 采集市场知识/经验/规律，打包成通用格式供私密库使用
-# 版本： 1.1
-# 触发： 每3小时运行一次，支持手动触发
-# ============================================================
+# data-collector 知识采集工作流
+# 采集市场知识/经验/规律，打包成通用格式供私密库使用
+# 频率：每3小时一次（与市场数据采集频率一致）
 
 name: 知识采集
 
 on:
-  # 定时触发：每3小时一次（北京时间）
-  # GitHub Actions 使用 UTC 时间，需要减去 8 小时
-  # 0 0-23/3 * * * 表示每3小时运行一次
   schedule:
-    - cron: '0 */3 * * *'   # 每3小时运行一次
-
-  # 手动触发
+    - cron: '0 */3 * * *'   # 每3小时一次（UTC时间）
   workflow_dispatch:
-    inputs:
-      custom_time:
-        description: '自定义采集时间（可选，格式: YYYY-MM-DD HH:MM:SS）'
-        required: false
-        type: string
-        placeholder: '2026-08-19 18:30:00'
 
-# 权限配置
 permissions:
   contents: write
-  actions: read
+  actions: write
+
+env:
+  TZ: Asia/Shanghai
+  SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
 
 jobs:
   collect-knowledge:
-    name: 采集市场知识
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
-    env:
-      TZ: 'Asia/Shanghai'
-      SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
-
     steps:
-      # ---- 1. 检出代码 ----
-      - name: 📥 检出代码
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      # ---- 2. 设置 Python ----
-      - name: 🐍 设置 Python
+      - name: 设置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip'
 
-      # ---- 3. 安装依赖 ----
-      - name: 📦 安装依赖
+      - name: 安装依赖
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt || true
-          pip install pandas requests pyyaml || true
+          python -m pip install --upgrade pip
+          pip install akshare yfinance pandas-datareader requests pyyaml feedparser beautifulsoup4 pandas numpy
 
-      # ---- 4. 创建输出目录 ----
-      - name: 📁 创建输出目录
-        run: |
-          mkdir -p data/knowledge
-          mkdir -p logs
+      - name: 创建输出目录
+        run: mkdir -p data/knowledge
 
-      # ---- 5. 执行知识采集（无 --time 参数，使用当前时间） ----
-      - name: 🔍 执行知识采集
-        id: collect
+      - name: 采集市场知识
         run: |
-          echo "=========================================="
-          echo "📊 知识采集任务开始"
-          echo "时间: $(date '+%Y-%m-%d %H:%M:%S')"
-          echo "=========================================="
+          echo "📊 开始采集市场知识..."
+          python scripts/collect_market_knowledge.py --output ./data/knowledge/
+        continue-on-error: false
+
+      - name: 数据签名（payload 格式）
+        run: |
+          echo "🔐 开始签名..."
+          python scripts/sign.py
+        continue-on-error: true
+
+      - name: 安全检查
+        run: |
+          echo "🛡️ 开始安全检查..."
+          python scripts/security_check.py
+        continue-on-error: true
+
+      - name: 打印采集结果
+        run: |
+          echo "📦 知识数据文件列表:"
+          ls -la data/knowledge/ 2>/dev/null || echo "   (暂无文件)"
           echo ""
+          echo "📊 最新知识包:"
+          ls -t data/knowledge/knowledge_package_*.json 2>/dev/null | head -1 || echo "   (暂无)"
 
-          # 检查是否手动传入自定义时间
-          if [ -n "${{ github.event.inputs.custom_time }}" ]; then
-            python scripts/collect_market_knowledge.py \
-              --time "${{ github.event.inputs.custom_time }}" \
-              --output ./data/knowledge/
-          else
-            # 默认使用当前时间（无 --time 参数）
-            python scripts/collect_market_knowledge.py \
-              --output ./data/knowledge/
-          fi
-
-          if [ $? -eq 0 ]; then
-            echo "✅ 知识采集成功"
-            echo "status=success" >> $GITHUB_OUTPUT
-
-            LATEST_FILE=$(ls -t data/knowledge/knowledge_package_*.json 2>/dev/null | head -1)
-            if [ -n "$LATEST_FILE" ]; then
-              echo "file=$LATEST_FILE" >> $GITHUB_OUTPUT
-              echo "📄 生成文件: $LATEST_FILE"
-            fi
-          else
-            echo "❌ 知识采集失败"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-
-      # ---- 6. 显示采集摘要 ----
-      - name: 📊 显示采集摘要
-        if: steps.collect.outputs.status == 'success' && steps.collect.outputs.file != ''
-        run: |
-          echo "=========================================="
-          echo "📊 数据包摘要"
-          echo "=========================================="
-          FILE="${{ steps.collect.outputs.file }}"
-          if [ -f "$FILE" ]; then
-            echo "文件: $FILE"
-            echo "大小: $(du -h $FILE | cut -f1)"
-            echo ""
-            echo "📋 内容预览:"
-            head -30 $FILE
-          else
-            echo "⚠️ 文件不存在"
-          fi
-
-      # ---- 7. 上传 Artifact ----
-      - name: 📤 上传 Artifact
-        if: steps.collect.outputs.status == 'success'
+      - name: 上传 Artifact（供私密库拉取）
         uses: actions/upload-artifact@v4
         with:
           name: collected-data
           path: data/knowledge/*.json
           retention-days: 7
-          if-no-files-found: error
 
-      # ---- 8. 提交到仓库 ----
-      - name: 💾 提交到仓库
-        if: steps.collect.outputs.status == 'success'
+      - name: 提交到仓库（持久化存储）
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/knowledge/*.json
-
+          git add data/knowledge/*.json 2>/dev/null || true
           if git diff --staged --quiet; then
             echo "ℹ️ 无新数据需要提交"
           else
@@ -143,12 +85,9 @@ jobs:
             echo "✅ 数据已提交到仓库"
           fi
 
-      # ---- 9. 清理旧文件（保留最近7天） ----
-      - name: 🧹 清理旧文件
+      - name: 清理旧文件（保留30天）
         run: |
-          echo "=========================================="
-          echo "🧹 清理 7 天前的知识数据"
-          echo "=========================================="
-          find data/knowledge/ -name "knowledge_package_*.json" -type f -mtime +7 -delete 2>/dev/null || true
+          echo "🧹 清理 30 天前的知识数据..."
+          find data/knowledge/ -name "knowledge_package_*.json" -type f -mtime +30 -delete 2>/dev/null || true
           REMAINING=$(ls data/knowledge/knowledge_package_*.json 2>/dev/null | wc -l)
           echo "✅ 剩余文件: $REMAINING 个"
