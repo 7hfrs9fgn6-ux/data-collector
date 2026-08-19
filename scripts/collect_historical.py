@@ -454,19 +454,33 @@ def fetch_historical_sector(years: int = 20) -> Dict[str, Any]:
             df = ak.index_hist_sw(symbol=code)
 
             if df is not None and not df.empty:
-                data = []
+                # 打印列名以便调试（只在第一次打印）
+                if sector == "电子":
+                    logger.info(f"      DataFrame 列名: {list(df.columns)}")
+
+                # 智能识别列名（支持中英文）
                 date_col = None
                 close_col = None
+              
                 for col in df.columns:
-                    if 'date' in col.lower():
+                    col_lower = str(col).lower()
+                    if 'date' in col_lower or '日期' in str(col):
                         date_col = col
-                    if 'close' in col.lower() or '收盘' in col:
+                    if 'close' in col_lower or '收盘' in str(col):
                         close_col = col
 
                 if date_col is None:
-                    logger.warning(f"   ⚠️ {sector}: 未找到日期列")
-                    continue
-
+                    for col in df.columns:
+                        if 'time' in str(col).lower() or 'day' in str(col).lower():
+                            date_col = col
+                            break
+                          
+                if date_col is None:
+                    # 如果还是找不到，打印列名并跳过
+                    logger.warning(f"   ⚠️ {sector}: 未找到日期列，列名: {list(df.columns)}")
+                    continue  
+                  
+                data = []
                 for _, row in df.iterrows():
                     date_val = row.get(date_col)
                     if date_val is None:
