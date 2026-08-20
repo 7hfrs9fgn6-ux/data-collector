@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-data-collector 宏观数据采集模块（增强版）
+data-collector 宏观数据采集模块（列名自动检测版）
 采集：GDP、CPI、PMI等宏观经济指标
 频率：每日1次
 数据源：akshare → 缓存
 ★ 2026-08-14 新增：自动HMAC-SHA256签名 ★
 ★ 2026-08-15 修复：非交易日返回0值问题，动态缓存有效期 ★
 ★ 2026-08-20 修复：添加 generated_at 字段，增强错误日志 ★
-★ 2026-08-20 增强：详细错误输出，便于排查 akshare 采集失败原因 ★
+★ 2026-08-20 增强：自动检测列名，适配 akshare API 变化 ★
 """
 
 import sys
@@ -16,7 +16,7 @@ import os
 import time
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union
 
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -74,8 +74,49 @@ def _get_cache_max_age_hours() -> int:
         return 24
 
 
+# ============================================================
+# ★ 列名自动检测工具 ★
+# ============================================================
+def _find_column(df, candidates: List[str]) -> Optional[str]:
+    """
+    在 DataFrame 中查找第一个匹配的列名（不区分大小写）
+    """
+    if df is None or df.empty:
+        return None
+    df_cols_lower = [c.lower() for c in df.columns]
+    for candidate in candidates:
+        candidate_lower = candidate.lower()
+        for i, col in enumerate(df_cols_lower):
+            if candidate_lower in col or col in candidate_lower:
+                return df.columns[i]
+    return None
+
+
+def _safe_extract_value(row, col_name: Optional[str], default: float = 0.0) -> float:
+    """
+    安全提取数值，支持多种数据类型
+    """
+    if col_name is None:
+        return default
+    try:
+        val = row.get(col_name)
+        if val is None:
+            return default
+        if isinstance(val, (int, float)):
+            return float(val) if val != 0 else default
+        if isinstance(val, str):
+            # 尝试解析字符串中的数字
+            import re
+            match = re.search(r'[-+]?\d*\.?\d+', val.replace(',', ''))
+            if match:
+                return float(match.group())
+        return default
+    except Exception:
+        return default
+
+
 class MacroDataCollector:
-    """宏观数据采集器（增强版）"""
+    """宏观数据采集器（列名自动检测版）"""
 
     def __init__(self):
         self.config = load_config()
@@ -155,15 +196,12 @@ class MacroDataCollector:
                     logger.error("❌ 所有宏观数据源均失败，返回空数据")
         except Exception as e:
             logger.error(f"❌ 宏观数据采集异常: {e}")
-            # 尝试使用缓存
             cached_data = self._fetch_from_cache()
             if cached_data and len(cached_data) > 0:
                 result["items"] = cached_data
                 result["total"] = len(cached_data)
                 result["source"] = "cache"
                 logger.info(f"✅ 宏观数据从缓存加载 ({len(cached_data)} 项)")
-            else:
-                logger.error("❌ 缓存也无有效数据，返回空数据")
 
         self._sign_result(result)
         return result
@@ -172,7 +210,6 @@ class MacroDataCollector:
         """检查 akshare 是否可正常导入和调用"""
         try:
             import akshare as ak
-            # 尝试简单调用（不获取数据，只测试导入）
             logger.debug("✅ akshare 导入成功")
             return True
         except ImportError as e:
@@ -195,7 +232,7 @@ class MacroDataCollector:
     def _fetch_from_akshare(self) -> List[Dict]:
         """
         从 akshare 获取宏观数据
-        ★ 改进：详细记录每个指标采集失败的原因
+        ★ 列名自动检测，适配 API 变化
         """
         try:
             import akshare as ak
@@ -210,22 +247,33 @@ class MacroDataCollector:
         # 1. 中国 GDP 数据
         try:
             logger.debug("   🔍 尝试获取 GDP 数据...")
-            gdp = ak.macro_china_gdp()
-            if gdp is not None and not gdp.empty:
-                latest = gdp.iloc[-1]
-                value = float(latest.get('value', 0))
+            df = ak.macro_china_gdp()
+            if df is not None and not df.empty:
+                # ★ 自动检测列名
+                value_col = _find_column(df, ['value', '数值', 'gdp', 'GDP', '总量'])
+                date_col = _find_column(df, ['date', '日期', 'quarter', '季度', 'report_date'])
+                quarter_col = _find_column(df, ['quarter', '季度', 'report_date'])
+
+                logger.debug(f"   📋 GDP DataFrame 列名: {list(df.columns)}")
+                logger.debug(f"   📋 GDP 检测到 value_col: {value_col}, date_col: {date_col}")
+
+                latest = df.iloc[-1]
+                value = _safe_extract_value(latest, value_col)
+
                 if value > 0:
                     macro_data.append({
                         "indicator": "GDP",
                         "value": value,
-                        "quarter": latest.get('quarter', ''),
+                        "quarter": str(latest.get(quarter_col, '')) if quarter_col else '',
                         "unit": "万亿元",
-                        "date": latest.get('date', today)
+                        "date": str(latest.get(date_col, today)) if date_col else today
                     })
                     indicators_found.add("GDP")
                     logger.info(f"   ✅ GDP: {value} 万亿元")
                 else:
-                    logger.warning("   ⚠️ GDP 数据无效（value=0），跳过")
+                    logger.warning(f"   ⚠️ GDP 数据无效 (value={value})，跳过")
+                    if log_level == 'DEBUG':
+                        logger.debug(f"   📋 GDP 最新行: {latest.to_dict()}")
             else:
                 logger.warning("   ⚠️ GDP 数据为空")
         except Exception as e:
@@ -234,22 +282,31 @@ class MacroDataCollector:
         # 2. 中国 CPI 数据
         try:
             logger.debug("   🔍 尝试获取 CPI 数据...")
-            cpi = ak.macro_china_cpi()
-            if cpi is not None and not cpi.empty:
-                latest = cpi.iloc[-1]
-                value = float(latest.get('value', 0))
-                if value != 0:
+            df = ak.macro_china_cpi()
+            if df is not None and not df.empty:
+                value_col = _find_column(df, ['value', '数值', 'cpi', 'CPI', '同比'])
+                date_col = _find_column(df, ['date', '日期', 'month', '月份', 'report_date'])
+
+                logger.debug(f"   📋 CPI DataFrame 列名: {list(df.columns)}")
+                logger.debug(f"   📋 CPI 检测到 value_col: {value_col}, date_col: {date_col}")
+
+                latest = df.iloc[-1]
+                value = _safe_extract_value(latest, value_col)
+
+                if value != 0:  # CPI 可以为负值（通缩），所以检查是否 != 0
                     macro_data.append({
                         "indicator": "CPI",
                         "value": value,
-                        "date": latest.get('date', today),
+                        "date": str(latest.get(date_col, today)) if date_col else today,
                         "unit": "%",
                         "change": "同比"
                     })
                     indicators_found.add("CPI")
                     logger.info(f"   ✅ CPI: {value}%")
                 else:
-                    logger.warning("   ⚠️ CPI 数据无效（value=0），跳过")
+                    logger.warning(f"   ⚠️ CPI 数据无效 (value={value})，跳过")
+                    if log_level == 'DEBUG':
+                        logger.debug(f"   📋 CPI 最新行: {latest.to_dict()}")
             else:
                 logger.warning("   ⚠️ CPI 数据为空")
         except Exception as e:
@@ -258,21 +315,30 @@ class MacroDataCollector:
         # 3. 中国 PMI 数据
         try:
             logger.debug("   🔍 尝试获取 PMI 数据...")
-            pmi = ak.macro_china_pmi()
-            if pmi is not None and not pmi.empty:
-                latest = pmi.iloc[-1]
-                value = float(latest.get('value', 0))
+            df = ak.macro_china_pmi()
+            if df is not None and not df.empty:
+                value_col = _find_column(df, ['value', '数值', 'pmi', 'PMI', '指数'])
+                date_col = _find_column(df, ['date', '日期', 'month', '月份', 'report_date'])
+
+                logger.debug(f"   📋 PMI DataFrame 列名: {list(df.columns)}")
+                logger.debug(f"   📋 PMI 检测到 value_col: {value_col}, date_col: {date_col}")
+
+                latest = df.iloc[-1]
+                value = _safe_extract_value(latest, value_col)
+
                 if value > 0:
                     macro_data.append({
                         "indicator": "PMI",
                         "value": value,
-                        "date": latest.get('date', today),
+                        "date": str(latest.get(date_col, today)) if date_col else today,
                         "unit": ""
                     })
                     indicators_found.add("PMI")
                     logger.info(f"   ✅ PMI: {value}")
                 else:
-                    logger.warning("   ⚠️ PMI 数据无效（value=0），跳过")
+                    logger.warning(f"   ⚠️ PMI 数据无效 (value={value})，跳过")
+                    if log_level == 'DEBUG':
+                        logger.debug(f"   📋 PMI 最新行: {latest.to_dict()}")
             else:
                 logger.warning("   ⚠️ PMI 数据为空")
         except Exception as e:
@@ -281,10 +347,10 @@ class MacroDataCollector:
         if macro_data:
             logger.info(f"   📊 宏观数据采集汇总: {len(macro_data)} 项 ({', '.join(indicators_found)})")
         else:
-            logger.warning("   ❌ 所有宏观指标均采集失败，请检查网络或 akshare 版本")
-            # 输出调试建议
-            logger.warning("   💡 建议: 1) 检查网络连接 2) 升级 akshare: pip install akshare --upgrade")
-            logger.warning("   💡 建议: 3) 设置 LOG_LEVEL=DEBUG 查看详细错误")
+            logger.warning("   ❌ 所有宏观指标均采集失败")
+            logger.warning("   💡 建议: 1) 设置 LOG_LEVEL=DEBUG 查看列名")
+            logger.warning("   💡 建议: 2) 升级 akshare: pip install akshare --upgrade")
+
         return macro_data
 
     def _fetch_from_cache(self) -> List[Dict]:
@@ -350,7 +416,8 @@ def collect_macro() -> Dict[str, Any]:
     logger.info(f"📂 数据来源: {result['source']}")
     logger.info(f"📅 生成时间: {result.get('generated_at', '未知')}")
     if result['total'] == 0:
-        logger.warning("⚠️ 本次采集未获取到任何宏观数据，请检查 akshare 接口或网络")
+        logger.warning("⚠️ 本次采集未获取到任何宏观数据")
+        logger.warning("💡 请运行: LOG_LEVEL=DEBUG python scripts/collect_macro.py 查看详细列名")
     return result
 
 
@@ -359,5 +426,4 @@ if __name__ == "__main__":
     print(f"宏观数据采集完成: {data['total']} 项")
     print(f"生成时间: {data.get('generated_at', '未知')}")
     if data['total'] == 0:
-        print("⚠️ 未获取到数据，请检查 akshare 版本和网络")
-        print("💡 可以尝试: LOG_LEVEL=DEBUG python scripts/collect_macro.py")
+        print("⚠️ 未获取到数据，请运行: LOG_LEVEL=DEBUG python scripts/collect_macro.py")
