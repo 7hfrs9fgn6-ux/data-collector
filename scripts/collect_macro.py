@@ -7,6 +7,7 @@ data-collector 宏观数据采集模块
 数据源：akshare → 缓存
 ★ 2026-08-14 新增：自动HMAC-SHA256签名 ★
 ★ 2026-08-15 修复：非交易日返回0值问题，动态缓存有效期 ★
+★ 2026-08-20 修复：添加 generated_at 字段，确保私密库可识别数据新鲜度 ★
 """
 
 import sys
@@ -89,14 +90,17 @@ class MacroDataCollector:
         采集宏观数据
         返回: {
             "timestamp": "...",
+            "generated_at": "...",  # ★ 2026-08-20 新增：与 timestamp 一致
             "source": "macro",
             "total": N,
             "items": [...],
             "signature": "..."
         }
         """
+        timestamp = get_timestamp()
         result = {
-            "timestamp": get_timestamp(),
+            "timestamp": timestamp,
+            "generated_at": timestamp,  # ★ 2026-08-20 新增：供私密库识别数据新鲜度
             "source": "macro",
             "total": 0,
             "items": []
@@ -285,6 +289,7 @@ class MacroDataCollector:
         try:
             data = {
                 "timestamp": get_timestamp(),
+                "generated_at": get_timestamp(),  # ★ 2026-08-20 新增：缓存也包含 generated_at
                 "total": len(items),
                 "items": items
             }
@@ -299,6 +304,10 @@ def collect_macro() -> Dict[str, Any]:
     collector = MacroDataCollector()
     result = collector.collect()
 
+    # ★ 确保 generated_at 字段存在（向后兼容）
+    if 'generated_at' not in result:
+        result['generated_at'] = result.get('timestamp')
+
     # 保存到暂存区（已包含签名）
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = f"staging/macro_{timestamp}.json"
@@ -312,9 +321,11 @@ def collect_macro() -> Dict[str, Any]:
     logger.info(f"📊 宏观数据: {result['total']} 项")
     logger.info(f"🔐 签名状态: {'✅ 已签名' if result.get('signature') else '⚠️ 未签名'}")
     logger.info(f"📂 数据来源: {result['source']}")
+    logger.info(f"📅 生成时间: {result.get('generated_at', '未知')}")
     return result
 
 
 if __name__ == "__main__":
     data = collect_macro()
     print(f"宏观数据采集完成: {data['total']} 项")
+    print(f"生成时间: {data.get('generated_at', '未知')}")
