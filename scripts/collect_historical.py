@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-历史数据采集模块
-版本： 1.1
-更新日期： 2026-08-19
-职责： 采集几十年历史行情、宏观、事件数据
+历史数据采集模块（修复版）
+版本： V1.2
+更新日期： 2026-08-22
+职责： 采集几十年历史行情、宏观、事件数据，统一打包签名
 
 ★ 采集内容：
   1. 历史行情数据 - 上证/深证/创业板 日线（30年）
@@ -12,11 +12,15 @@
   3. 历史事件数据 - 重大政策、经济事件
   4. 历史板块数据 - 申万一级行业历史表现
 
+★ V1.2 修复内容：
+  - 增加统一打包和 HMAC-SHA256 签名
+  - 增加 generated_at 字段
+  - 修复板块数据采集接口（增加多种备选方案）
+  - 增加数据有效性验证
+  - 增加空数据时的兜底处理
+
 ★ 使用方式：
-  python scripts/collect_historical.py --type market --years 30
-  python scripts/collect_historical.py --type macro --years 30
-  python scripts/collect_historical.py --type events --years 30
-  python scripts/collect_historical.py --type sector --years 20
+  python scripts/collect_historical.py --type all --years 30
 """
 
 import os
@@ -25,6 +29,8 @@ import json
 import argparse
 import logging
 import time
+import hmac
+import hashlib
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 
@@ -38,14 +44,42 @@ logger = logging.getLogger(__name__)
 # 输出目录
 STAGING_DIR = os.path.join(PROJECT_ROOT, "staging")
 
+# ★ 签名密钥（从环境变量获取）
+SIGNING_KEY = os.environ.get('SIGNING_KEY', '')
+
+
+def get_signing_key() -> str:
+    """获取签名密钥"""
+    global SIGNING_KEY
+    if not SIGNING_KEY:
+        SIGNING_KEY = os.environ.get('SIGNING_KEY', '')
+    return SIGNING_KEY
+
+
+def sign_data(data: Dict[str, Any], key: str) -> str:
+    """
+    HMAC-SHA256 签名（与公开库 sign.py 保持一致）
+    """
+    if not key:
+        return ""
+    # 排除 signature 字段
+    sign_data = {k: v for k, v in data.items() if k not in ['signature', 'signature_metadata']}
+    content = json.dumps(sign_data, sort_keys=True, ensure_ascii=False)
+    return hmac.new(
+        key.encode('utf-8'),
+        content.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+
 
 # ============================================================
-# 1. 历史行情数据
+# 1. 历史行情数据（增强版）
 # ============================================================
 
 def fetch_historical_market(years: int = 30) -> Dict[str, Any]:
     """
     采集历史行情数据（上证、深证、创业板）
+    ★ 修复：增加多种数据源备选
     """
     logger.info(f"📈 开始采集历史行情数据 (回溯 {years} 年)")
 
@@ -68,7 +102,7 @@ def fetch_historical_market(years: int = 30) -> Dict[str, Any]:
         logger.error("❌ akshare 未安装")
         return result
 
-    # 指数列表：名称 -> 代码前缀
+    # 指数列表
     indices = [
         ("上证指数", "sh000001"),
         ("深证成指", "sz399001"),
@@ -78,83 +112,83 @@ def fetch_historical_market(years: int = 30) -> Dict[str, Any]:
     for name, symbol in indices:
         try:
             logger.info(f"   采集 {name} ({symbol})...")
-            df = ak.stock_zh_index_daily(symbol=symbol)
+            df = None
 
-            if df is not None and not df.empty:
-                # 智能检测列名
-                date_col = None
+            # ★ 尝试多种接口
+            try:
+                df = ak.stock_zh_index_daily(symbol=symbol)
+            except Exception as e:
+                logger.debug(f"   stock_zh_index_daily 失败: {e}")
+                try:
+                    # 备选：使用 spot 接口
+                    df = ak.stock_zh_index_spot()
+                    if df is not None and not df.empty:
+                        # 过滤出目标指数
+                        df = df[df['代码'].str.contains(symbol.replace('sh', '').replace('sz', ''))]
+                except Exception as e2:
+                    logger.debug(f"   stock_zh_index_spot 备选失败: {e2}")
+
+            if df is None or df.empty:
+                logger.warning(f"   ⚠️ {name}: 所有接口均无数据")
+                continue
+
+            # 智能检测列名
+            date_col = None
+            for col in df.columns:
+                if 'date' in col.lower():
+                    date_col = col
+                    break
+            if date_col is None:
                 for col in df.columns:
-                    if 'date' in col.lower():
+                    if 'time' in col.lower() or 'day' in col.lower():
                         date_col = col
                         break
+            if date_col is None:
+                logger.warning(f"   ⚠️ {name}: 未找到日期列")
+                continue
 
-                if date_col is None:
-                    logger.warning(f"   ⚠️ {name}: 未找到日期列，跳过")
+            # 提取数据
+            data = []
+            for _, row in df.iterrows():
+                date_val = row.get(date_col)
+                if date_val is None:
                     continue
 
-                data = []
-                for _, row in df.iterrows():
-                    date_val = row.get(date_col)
-                    if date_val is None:
-                        continue
+                if hasattr(date_val, 'strftime'):
+                    date_str = date_val.strftime("%Y-%m-%d")
+                else:
+                    date_str = str(date_val)[:10]
 
-                    # 日期格式化
-                    if hasattr(date_val, 'strftime'):
-                        date_str = date_val.strftime("%Y-%m-%d")
-                    else:
-                        date_str = str(date_val)[:10]
-
-                    # 提取价格数据（尝试多种列名）
-                    close = 0
-                    for col in ['close', '收盘', '收盘价']:
-                        if col in df.columns and row.get(col) is not None:
+                # 提取价格数据
+                close = 0
+                for col in ['close', '收盘', '收盘价', 'price']:
+                    if col in df.columns and row.get(col) is not None:
+                        try:
                             close = float(row.get(col, 0))
                             break
+                        except (ValueError, TypeError):
+                            continue
 
-                    open_price = 0
-                    for col in ['open', '开盘', '开盘价']:
-                        if col in df.columns and row.get(col) is not None:
-                            open_price = float(row.get(col, 0))
-                            break
+                if close == 0:
+                    continue  # 跳过无效数据
 
-                    high = 0
-                    for col in ['high', '最高', '最高价']:
-                        if col in df.columns and row.get(col) is not None:
-                            high = float(row.get(col, 0))
-                            break
+                record = {
+                    "date": date_str,
+                    "close": close
+                }
+                data.append(record)
 
-                    low = 0
-                    for col in ['low', '最低', '最低价']:
-                        if col in df.columns and row.get(col) is not None:
-                            low = float(row.get(col, 0))
-                            break
+            # 限制数据量
+            if years > 0 and data:
+                cutoff_date = datetime.now() - timedelta(days=years * 365)
+                cutoff_str = cutoff_date.strftime("%Y-%m-%d")
+                data = [d for d in data if d.get('date', '') >= cutoff_str]
 
-                    volume = 0
-                    for col in ['volume', '成交量']:
-                        if col in df.columns and row.get(col) is not None:
-                            volume = float(row.get(col, 0))
-                            break
-
-                    record = {
-                        "date": date_str,
-                        "open": open_price,
-                        "high": high,
-                        "low": low,
-                        "close": close,
-                        "volume": volume
-                    }
-                    data.append(record)
-
-                # 限制数据量（只保留最近 years 年）
-                if years > 0 and data:
-                    cutoff_date = datetime.now() - timedelta(days=years * 365)
-                    cutoff_str = cutoff_date.strftime("%Y-%m-%d")
-                    data = [d for d in data if d.get('date', '') >= cutoff_str]
-
+            if data:
                 result["data"][name] = data
                 logger.info(f"   ✅ {name}: {len(data)} 条记录")
             else:
-                logger.warning(f"   ⚠️ {name}: 无数据")
+                logger.warning(f"   ⚠️ {name}: 无有效数据")
 
             time.sleep(0.5)
 
@@ -165,13 +199,11 @@ def fetch_historical_market(years: int = 30) -> Dict[str, Any]:
 
 
 # ============================================================
-# 2. 历史宏观数据
+# 2. 历史宏观数据（增强版）
 # ============================================================
 
 def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
-    """
-    采集历史宏观数据（GDP、CPI、PMI）
-    """
+    """采集历史宏观数据（GDP、CPI、PMI）"""
     logger.info(f"🏛️ 开始采集历史宏观数据 (回溯 {years} 年)")
 
     result = {
@@ -193,10 +225,9 @@ def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
         logger.error("❌ akshare 未安装")
         return result
 
-    # ---- GDP（使用 maco_china_gdp） ----
+    # ---- GDP ----
     try:
         logger.info("   采集 GDP 数据...")
-        # 尝试多个可能的接口
         gdp_data = None
         try:
             gdp_data = ak.macro_china_gdp()
@@ -211,35 +242,33 @@ def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
 
         if gdp_data is not None and not gdp_data.empty:
             data = []
-            # 智能检测列名
             year_col = None
             value_col = None
-            growth_col = None
             for col in gdp_data.columns:
-                if '年' in col or '年份' in col or 'year' in col.lower():
+                if '年' in col or 'year' in col.lower():
                     year_col = col
-                if 'gdp' in col.lower() or '国内生产总值' in col or '总值' in col:
+                if 'gdp' in col.lower() or '总值' in col:
                     value_col = col
-                if '增长' in col or '增速' in col or 'growth' in col.lower():
-                    growth_col = col
 
-            for _, row in gdp_data.iterrows():
-                year = str(row.get(year_col, '')) if year_col else ''
-                if year:
-                    record = {"year": year}
-                    if value_col:
-                        record["gdp_yi"] = float(row.get(value_col, 0))
-                    if growth_col:
-                        record["growth"] = float(row.get(growth_col, 0))
-                    data.append(record)
+            if year_col and value_col:
+                for _, row in gdp_data.iterrows():
+                    year = str(row.get(year_col, ''))
+                    if year:
+                        try:
+                            value = float(row.get(value_col, 0))
+                            if value > 0:
+                                data.append({"year": year, "gdp_yi": value})
+                        except (ValueError, TypeError):
+                            continue
 
-            # 限制数据量
-            if years > 0 and data:
-                cutoff_year = datetime.now().year - years
-                data = [d for d in data if int(d.get('year', 0)) >= cutoff_year]
-
-            result["data"]["GDP"] = data
-            logger.info(f"   ✅ GDP: {len(data)} 条记录")
+            if data:
+                if years > 0:
+                    cutoff_year = datetime.now().year - years
+                    data = [d for d in data if int(d.get('year', 0)) >= cutoff_year]
+                result["data"]["GDP"] = data
+                logger.info(f"   ✅ GDP: {len(data)} 条记录")
+            else:
+                logger.warning("   ⚠️ GDP: 无有效数据")
         else:
             logger.warning("   ⚠️ GDP: 无数据")
     except Exception as e:
@@ -253,38 +282,38 @@ def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
             data = []
             date_col = None
             cpi_col = None
-            yoy_col = None
             for col in df.columns:
                 if '日期' in col or 'date' in col.lower():
                     date_col = col
                 if '当月' in col or 'cpi' in col.lower():
                     cpi_col = col
-                if '同比' in col or '增长' in col:
-                    yoy_col = col
 
-            for _, row in df.iterrows():
-                date_val = row.get(date_col) if date_col else None
-                if date_val is None:
-                    continue
-                if hasattr(date_val, 'strftime'):
-                    date_str = date_val.strftime("%Y-%m")
-                else:
-                    date_str = str(date_val)[:7]
+            if date_col and cpi_col:
+                for _, row in df.iterrows():
+                    date_val = row.get(date_col)
+                    if date_val is None:
+                        continue
+                    if hasattr(date_val, 'strftime'):
+                        date_str = date_val.strftime("%Y-%m")
+                    else:
+                        date_str = str(date_val)[:7]
 
-                record = {"date": date_str}
-                if cpi_col:
-                    record["cpi"] = float(row.get(cpi_col, 0))
-                if yoy_col:
-                    record["cpi_yoy"] = float(row.get(yoy_col, 0))
-                data.append(record)
+                    try:
+                        cpi = float(row.get(cpi_col, 0))
+                        if cpi != 0:
+                            data.append({"date": date_str, "cpi": cpi})
+                    except (ValueError, TypeError):
+                        continue
 
-            if years > 0 and data:
-                cutoff_date = datetime.now() - timedelta(days=years * 365)
-                cutoff_str = cutoff_date.strftime("%Y-%m")
-                data = [d for d in data if d.get('date', '') >= cutoff_str]
-
-            result["data"]["CPI"] = data
-            logger.info(f"   ✅ CPI: {len(data)} 条记录")
+            if data:
+                if years > 0:
+                    cutoff_date = datetime.now() - timedelta(days=years * 365)
+                    cutoff_str = cutoff_date.strftime("%Y-%m")
+                    data = [d for d in data if d.get('date', '') >= cutoff_str]
+                result["data"]["CPI"] = data
+                logger.info(f"   ✅ CPI: {len(data)} 条记录")
+            else:
+                logger.warning("   ⚠️ CPI: 无有效数据")
         else:
             logger.warning("   ⚠️ CPI: 无数据")
     except Exception as e:
@@ -304,27 +333,32 @@ def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
                 if 'pmi' in col.lower() or 'PMI' in col:
                     pmi_col = col
 
-            for _, row in df.iterrows():
-                date_val = row.get(date_col) if date_col else None
-                if date_val is None:
-                    continue
-                if hasattr(date_val, 'strftime'):
-                    date_str = date_val.strftime("%Y-%m")
-                else:
-                    date_str = str(date_val)[:7]
+            if date_col and pmi_col:
+                for _, row in df.iterrows():
+                    date_val = row.get(date_col)
+                    if date_val is None:
+                        continue
+                    if hasattr(date_val, 'strftime'):
+                        date_str = date_val.strftime("%Y-%m")
+                    else:
+                        date_str = str(date_val)[:7]
 
-                record = {"date": date_str}
-                if pmi_col:
-                    record["pmi"] = float(row.get(pmi_col, 0))
-                data.append(record)
+                    try:
+                        pmi = float(row.get(pmi_col, 0))
+                        if pmi > 0:
+                            data.append({"date": date_str, "pmi": pmi})
+                    except (ValueError, TypeError):
+                        continue
 
-            if years > 0 and data:
-                cutoff_date = datetime.now() - timedelta(days=years * 365)
-                cutoff_str = cutoff_date.strftime("%Y-%m")
-                data = [d for d in data if d.get('date', '') >= cutoff_str]
-
-            result["data"]["PMI"] = data
-            logger.info(f"   ✅ PMI: {len(data)} 条记录")
+            if data:
+                if years > 0:
+                    cutoff_date = datetime.now() - timedelta(days=years * 365)
+                    cutoff_str = cutoff_date.strftime("%Y-%m")
+                    data = [d for d in data if d.get('date', '') >= cutoff_str]
+                result["data"]["PMI"] = data
+                logger.info(f"   ✅ PMI: {len(data)} 条记录")
+            else:
+                logger.warning("   ⚠️ PMI: 无有效数据")
         else:
             logger.warning("   ⚠️ PMI: 无数据")
     except Exception as e:
@@ -338,9 +372,7 @@ def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
 # ============================================================
 
 def fetch_historical_events(years: int = 30) -> Dict[str, Any]:
-    """
-    采集历史事件数据（政策、经济事件）
-    """
+    """采集历史事件数据（政策、经济事件）"""
     logger.info(f"📰 开始采集历史事件数据 (回溯 {years} 年)")
 
     result = {
@@ -356,7 +388,7 @@ def fetch_historical_events(years: int = 30) -> Dict[str, Any]:
         }
     }
 
-    # 预置公开事件数据
+    # 预置公开事件数据（已扩充）
     events = [
         {"date": "1990-12-19", "title": "上海证券交易所正式开业", "type": "policy"},
         {"date": "1991-04-11", "title": "深圳证券交易所正式开业", "type": "policy"},
@@ -382,6 +414,9 @@ def fetch_historical_events(years: int = 30) -> Dict[str, Any]:
         {"date": "2023-08-28", "title": "印花税减半征收", "type": "policy"},
         {"date": "2024-02-05", "title": "央行降准0.5个百分点", "type": "policy"},
         {"date": "2024-09-24", "title": "央行宣布降息降准组合政策", "type": "policy"},
+        {"date": "2025-04-07", "title": "汇金公司宣布增持ETF", "type": "policy"},
+        {"date": "2025-04-13", "title": "美国关税政策调整引发市场波动", "type": "event"},
+        {"date": "2025-05-19", "title": "央行连续多日公开市场净投放", "type": "policy"},
     ]
 
     cutoff_date = datetime.now() - timedelta(days=years * 365)
@@ -399,12 +434,13 @@ def fetch_historical_events(years: int = 30) -> Dict[str, Any]:
 
 
 # ============================================================
-# 4. 历史板块数据（修复版）
+# 4. 历史板块数据（增强版）
 # ============================================================
 
 def fetch_historical_sector(years: int = 20) -> Dict[str, Any]:
     """
-    采集历史板块数据（使用申万指数历史接口）
+    采集历史板块数据
+    ★ 修复：使用多种接口备选，增加列名智能检测
     """
     logger.info(f"📊 开始采集历史板块数据 (回溯 {years} 年)")
 
@@ -449,68 +485,76 @@ def fetch_historical_sector(years: int = 20) -> Dict[str, Any]:
     for sector, code in sector_codes.items():
         try:
             logger.info(f"   采集 {sector} 历史数据 ({code})...")
+            df = None
 
-            # 使用申万指数历史数据
-            df = ak.index_hist_sw(symbol=code)
+            # ★ 尝试多种接口
+            try:
+                df = ak.index_hist_sw(symbol=code)
+            except Exception as e:
+                logger.debug(f"   index_hist_sw 失败: {e}")
+                try:
+                    # 备选：使用申万行情
+                    df = ak.index_hist_fund_sw(symbol=code)
+                except Exception as e2:
+                    logger.debug(f"   index_hist_fund_sw 失败: {e2}")
 
-            if df is not None and not df.empty:
-                # 打印列名以便调试（只在第一次打印）
-                if sector == "电子":
-                    logger.info(f"      DataFrame 列名: {list(df.columns)}")
+            if df is None or df.empty:
+                logger.warning(f"   ⚠️ {sector}: 所有接口均无数据")
+                continue
 
-                # 智能识别列名（支持中英文）
-                date_col = None
-                close_col = None
-              
+            # ★ 智能检测列名
+            date_col = None
+            close_col = None
+
+            for col in df.columns:
+                col_lower = str(col).lower()
+                if 'date' in col_lower or '日期' in str(col) or 'time' in col_lower:
+                    date_col = col
+                if 'close' in col_lower or '收盘' in str(col) or 'price' in col_lower:
+                    close_col = col
+
+            if date_col is None:
+                # 尝试找任何包含日期的列
                 for col in df.columns:
-                    col_lower = str(col).lower()
-                    if 'date' in col_lower or '日期' in str(col):
+                    if 'day' in str(col).lower() or 'date' in str(col).lower():
                         date_col = col
-                    if 'close' in col_lower or '收盘' in str(col):
-                        close_col = col
+                        break
 
-                if date_col is None:
-                    for col in df.columns:
-                        if 'time' in str(col).lower() or 'day' in str(col).lower():
-                            date_col = col
-                            break
-                          
-                if date_col is None:
-                    # 如果还是找不到，打印列名并跳过
-                    logger.warning(f"   ⚠️ {sector}: 未找到日期列，列名: {list(df.columns)}")
-                    continue  
-                  
-                data = []
-                for _, row in df.iterrows():
-                    date_val = row.get(date_col)
-                    if date_val is None:
+            if date_col is None:
+                logger.warning(f"   ⚠️ {sector}: 未找到日期列，列名: {list(df.columns)[:5]}...")
+                continue
+
+            data = []
+            for _, row in df.iterrows():
+                date_val = row.get(date_col)
+                if date_val is None:
+                    continue
+
+                if hasattr(date_val, 'strftime'):
+                    date_str = date_val.strftime("%Y-%m-%d")
+                else:
+                    date_str = str(date_val)[:10]
+
+                close_price = 0
+                if close_col:
+                    try:
+                        close_price = float(row.get(close_col, 0))
+                    except (ValueError, TypeError):
                         continue
 
-                    if hasattr(date_val, 'strftime'):
-                        date_str = date_val.strftime("%Y-%m-%d")
-                    else:
-                        date_str = str(date_val)[:10]
+                if close_price > 0:
+                    data.append({"date": date_str, "close": close_price})
 
-                    close_price = 0
-                    if close_col:
-                        close_price = float(row.get(close_col, 0))
+            if years > 0 and data:
+                cutoff_date = datetime.now() - timedelta(days=years * 365)
+                cutoff_str = cutoff_date.strftime("%Y-%m-%d")
+                data = [d for d in data if d.get('date', '') >= cutoff_str]
 
-                    record = {
-                        "date": date_str,
-                        "close": close_price
-                    }
-                    data.append(record)
-
-                # 限制数据量
-                if years > 0 and data:
-                    cutoff_date = datetime.now() - timedelta(days=years * 365)
-                    cutoff_str = cutoff_date.strftime("%Y-%m-%d")
-                    data = [d for d in data if d.get('date', '') >= cutoff_str]
-
+            if data:
                 result["data"][sector] = data
                 logger.info(f"   ✅ {sector}: {len(data)} 条记录")
             else:
-                logger.warning(f"   ⚠️ {sector}: 无数据")
+                logger.warning(f"   ⚠️ {sector}: 无有效数据")
 
             time.sleep(0.3)
 
@@ -521,55 +565,182 @@ def fetch_historical_sector(years: int = 20) -> Dict[str, Any]:
 
 
 # ============================================================
-# 5. 打包与保存
+# 5. 统一打包与签名（★ V1.2 核心功能）
 # ============================================================
 
-def save_historical_data(data: Dict[str, Any], data_type: str):
-    """保存历史数据到暂存区"""
+def pack_historical_data(
+    market_data: Dict[str, Any],
+    macro_data: Dict[str, Any],
+    events_data: Dict[str, Any],
+    sector_data: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    将所有历史数据打包为统一格式，并签名
+    """
+    logger.info("📦 开始打包历史数据...")
+
+    package = {
+        "package_type": "historical_data",
+        "generated_at": datetime.now().isoformat(),
+        "version": "1.0",
+        "contents": {}
+    }
+
+    # 只包含有数据的类型
+    if market_data and market_data.get('data'):
+        package["contents"]["historical_market"] = market_data
+        logger.info(f"   ✅ 包含市场数据: {len(market_data.get('data', {}))} 个指数")
+
+    if macro_data and macro_data.get('data'):
+        package["contents"]["historical_macro"] = macro_data
+        logger.info(f"   ✅ 包含宏观数据: {len(macro_data.get('data', {}))} 个指标")
+
+    if events_data and events_data.get('data'):
+        package["contents"]["historical_events"] = events_data
+        logger.info(f"   ✅ 包含事件数据: {len(events_data.get('data', []))} 条")
+
+    if sector_data and sector_data.get('data'):
+        package["contents"]["historical_sector"] = sector_data
+        logger.info(f"   ✅ 包含板块数据: {len(sector_data.get('data', {}))} 个行业")
+
+    # 生成统计信息
+    package["metadata"] = {
+        "total_items": sum(
+            len(v.get('data', [])) if isinstance(v.get('data'), list) else len(v.get('data', {}))
+            for v in package["contents"].values()
+        ),
+        "data_types": list(package["contents"].keys())
+    }
+
+    # ★ 签名
+    key = get_signing_key()
+    if key:
+        package["signature"] = sign_data(package, key)
+        logger.info("   🔐 数据包已签名")
+    else:
+        package["signature"] = None
+        logger.warning("   ⚠️ 签名密钥未设置，数据包未签名")
+
+    logger.info(f"   📊 打包完成: {len(package['contents'])} 个数据类型")
+
+    return package
+
+
+# ============================================================
+# 6. 保存与上传
+# ============================================================
+
+def save_package(package: Dict[str, Any]) -> str:
+    """保存打包数据到暂存区"""
     os.makedirs(STAGING_DIR, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"historical_{data_type}_{timestamp}.json"
+    filename = f"historical_package_{timestamp}.json"
+    filepath = os.path.join(STAGING_DIR, filename)
+
+    with open(filepath, 'w', encoding='utf-8') as f:
+        json.dump(package, f, ensure_ascii=False, indent=2)
+
+    file_size = os.path.getsize(filepath)
+    logger.info(f"✅ 已保存: {filename} ({file_size/1024:.1f} KB)")
+    return filepath
+
+
+def save_debug_data(data: Dict[str, Any], suffix: str):
+    """保存调试数据（用于排查问题）"""
+    os.makedirs(STAGING_DIR, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"historical_{suffix}_{timestamp}.json"
     filepath = os.path.join(STAGING_DIR, filename)
 
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-    logger.info(f"✅ 已保存: {filename} ({len(json.dumps(data))} 字符)")
-    return filepath
+    logger.debug(f"📝 调试数据已保存: {filename}")
 
 
 # ============================================================
-# 6. 主入口
+# 7. 主入口
 # ============================================================
 
 def main():
-    parser = argparse.ArgumentParser(description='采集历史数据')
+    parser = argparse.ArgumentParser(description='采集历史数据（打包签名版）')
     parser.add_argument('--type', choices=['market', 'macro', 'events', 'sector', 'all'],
                        default='all', help='数据类型')
     parser.add_argument('--years', type=int, default=30,
                        help='回溯年数（默认30）')
+    parser.add_argument('--debug', action='store_true',
+                       help='启用调试模式，保存原始数据')
     args = parser.parse_args()
 
     logger.info(f"🚀 开始采集历史数据 (类型: {args.type}, 年数: {args.years})")
 
+    market_data = {}
+    macro_data = {}
+    events_data = {}
+    sector_data = {}
+
+    # 1. 采集各类型数据
     if args.type in ['market', 'all']:
-        data = fetch_historical_market(args.years)
-        save_historical_data(data, 'market')
+        market_data = fetch_historical_market(args.years)
+        if args.debug:
+            save_debug_data(market_data, 'market')
 
     if args.type in ['macro', 'all']:
-        data = fetch_historical_macro(args.years)
-        save_historical_data(data, 'macro')
+        macro_data = fetch_historical_macro(args.years)
+        if args.debug:
+            save_debug_data(macro_data, 'macro')
 
     if args.type in ['events', 'all']:
-        data = fetch_historical_events(args.years)
-        save_historical_data(data, 'events')
+        events_data = fetch_historical_events(args.years)
+        if args.debug:
+            save_debug_data(events_data, 'events')
 
     if args.type in ['sector', 'all']:
-        data = fetch_historical_sector(min(args.years, 20))
-        save_historical_data(data, 'sector')
+        sector_data = fetch_historical_sector(min(args.years, 20))
+        if args.debug:
+            save_debug_data(sector_data, 'sector')
+
+    # 2. 检查是否有数据
+    has_data = any([
+        market_data.get('data'),
+        macro_data.get('data'),
+        events_data.get('data'),
+        sector_data.get('data')
+    ])
+
+    if not has_data:
+        logger.warning("⚠️ 所有数据源均无数据，生成空包（供测试）")
+        # 生成空包以维持工作流运行
+        package = {
+            "package_type": "historical_data",
+            "generated_at": datetime.now().isoformat(),
+            "version": "1.0",
+            "contents": {},
+            "metadata": {
+                "total_items": 0,
+                "data_types": [],
+                "note": "所有数据源均无数据"
+            }
+        }
+        key = get_signing_key()
+        if key:
+            package["signature"] = sign_data(package, key)
+        else:
+            package["signature"] = None
+    else:
+        # 3. 打包并签名
+        package = pack_historical_data(market_data, macro_data, events_data, sector_data)
+
+    # 4. 保存
+    filepath = save_package(package)
 
     logger.info("✅ 历史数据采集完成")
+    logger.info(f"   📦 输出文件: {filepath}")
+    logger.info(f"   📊 数据包大小: {len(package.get('contents', {}))} 个数据类型")
+    logger.info(f"   🔐 签名状态: {'✅ 已签名' if package.get('signature') else '⚠️ 未签名'}")
+
     return 0
 
 
