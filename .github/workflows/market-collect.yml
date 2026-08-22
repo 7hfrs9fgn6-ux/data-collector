@@ -1,12 +1,14 @@
 # data-collector 市场数据采集工作流
 # 采集：大宗商品、宏观、美股、板块回撤、汇率
 # 频率：每小时
+# ★ ★ ★ 2026-08-22 V2.0 升级：美股独立 Artifact + 21:30 采集 ★ ★ ★
 
 name: Market Data Collection
 
 on:
   schedule:
-    - cron: '0 0,6,12,18 * * *'
+    - cron: '0 0,6,12,18 * * *'     # 常规采集
+    - cron: '30 21 * * *'            # ★ 21:30 美股收盘后采集
   workflow_dispatch:
 
 permissions:
@@ -67,10 +69,38 @@ jobs:
         run: |
           echo "📦 市场数据文件列表:"
           ls -la staging/ | grep -E "_signed" || echo "   (暂无签名文件)"
+          echo ""
+          echo "📊 文件统计:"
+          echo "   - 美股文件: $(ls staging/ | grep -E 'us_stock.*_signed\.json' | wc -l)"
+          echo "   - 宏观文件: $(ls staging/ | grep -E 'macro.*_signed\.json' | wc -l)"
+          echo "   - 板块文件: $(ls staging/ | grep -E 'sector.*_signed\.json' | wc -l)"
+          echo "   - 汇率文件: $(ls staging/ | grep -E 'forex.*_signed\.json' | wc -l)"
+          echo "   - 大宗商品文件: $(ls staging/ | grep -E 'commodity.*_signed\.json' | wc -l)"
 
-      - name: 上传 Artifact（已签名文件）
+      # ============================================================
+      # ★ 上传 Artifact 1：market-data（全部数据，向后兼容）
+      # ============================================================
+      - name: 上传 Artifact（全部市场数据）
         uses: actions/upload-artifact@v4
         with:
           name: market-data
           path: staging/*_*_signed.json
           retention-days: 7
+
+      # ============================================================
+      # ★ ★ ★ 2026-08-22 新增：美股独立 Artifact ★ ★ ★
+      # 供私密库 pre 阶段直接拉取隔夜美股数据
+      # ============================================================
+      - name: 上传 Artifact（美股数据 - 独立）
+        uses: actions/upload-artifact@v4
+        with:
+          name: us-stock-data
+          path: staging/us_stock_*_signed.json
+          retention-days: 7
+
+      - name: 上传完成通知
+        if: success()
+        run: |
+          echo "✅ 市场数据采集完成"
+          echo "   📦 market-data: 全部数据"
+          echo "   📦 us-stock-data: 美股数据（独立）"
