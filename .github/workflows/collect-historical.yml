@@ -1,23 +1,23 @@
-# data-collector 历史数据采集工作流
-# 采集：几十年历史行情数据、宏观数据、事件数据
+# data-collector 历史数据采集工作流（修正版）
+# 采集：几十年历史行情、宏观、事件、板块数据
 # 频率：每周一次（数据量较大，无需高频）
-# 定位：一次性/低频采集，与现有实时采集工作流互补
+# ★ ★ ★ 2026-08-22 修正：使用自包含的 collect_historical.py ★ ★ ★
 
 name: Historical Data Collection
 
 on:
   schedule:
-    - cron: '0 2 * * 0'          # 每周日凌晨2:00
+    - cron: '0 18 * * 0'          # 每周日 18:00（北京时间）
   workflow_dispatch:
     inputs:
-      force_refresh:
-        description: '强制刷新（重新采集全部）'
-        type: boolean
-        default: false
       years:
-        description: '采集历史年数'
+        description: '采集历史年数（默认30）'
         type: number
         default: 30
+      debug:
+        description: '启用调试模式（保存原始数据）'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -50,60 +50,45 @@ jobs:
       - name: 创建暂存区目录
         run: mkdir -p staging
 
-      - name: 采集历史行情数据
+      - name: 采集并打包历史数据
         run: |
-          echo "📈 采集历史行情数据..."
-          python scripts/collect_historical.py --type market --years ${{ github.event.inputs.years || 30 }}
-        continue-on-error: true
-
-      - name: 采集历史宏观数据
-        run: |
-          echo "🏛️ 采集历史宏观数据..."
-          python scripts/collect_historical.py --type macro --years ${{ github.event.inputs.years || 30 }}
-        continue-on-error: true
-
-      - name: 采集历史事件数据
-        run: |
-          echo "📰 采集历史事件数据..."
-          python scripts/collect_historical.py --type events --years ${{ github.event.inputs.years || 30 }}
-        continue-on-error: true
-
-      - name: 采集历史板块数据
-        run: |
-          echo "📊 采集历史板块数据..."
-          python scripts/collect_historical.py --type sector --years ${{ github.event.inputs.years || 20 }}
-        continue-on-error: true
-
-      - name: 打包历史数据
-        run: |
-          echo "📦 打包历史数据..."
-          python scripts/pack_historical.py
-        continue-on-error: true
-
-      - name: 数据签名
-        run: |
-          echo "🔐 签名..."
-          python scripts/sign.py
-        continue-on-error: true
-
-      - name: 安全检查
-        run: |
-          echo "🛡️ 安全检查..."
-          python scripts/security_check.py
-        continue-on-error: true
+          echo "🚀 开始采集历史数据..."
+          echo "   📈 年数: ${{ github.event.inputs.years || 30 }}"
+          echo "   🐞 调试模式: ${{ github.event.inputs.debug || false }}"
+          
+          DEBUG_FLAG=""
+          if [[ "${{ github.event.inputs.debug }}" == "true" ]]; then
+            DEBUG_FLAG="--debug"
+          fi
+          
+          python scripts/collect_historical.py \
+            --type all \
+            --years ${{ github.event.inputs.years || 30 }} \
+            $DEBUG_FLAG
 
       - name: 打印暂存区状态
         run: |
-          echo "📊 文件列表:"
-          ls -la staging/ | grep historical || echo "   (暂无历史数据文件)"
+          echo "📦 历史数据文件列表:"
+          ls -la staging/ | grep -E "historical_package" || echo "   (暂无文件)"
+          echo ""
+          if ls staging/ | grep -q "historical_package"; then
+            FILE=$(ls staging/ | grep historical_package | head -1)
+            echo "📊 文件大小: $(du -h staging/$FILE | cut -f1)"
+            echo "🔐 签名状态: $(grep -o '"signature": "[^"]*"' staging/$FILE | head -1 || echo '无签名')"
+          fi
 
-      - name: 上传 Artifact（历史数据包）
+      - name: 上传 Artifact
         uses: actions/upload-artifact@v4
         with:
           name: historical-data
-          path: staging/historical_*_signed.json
+          path: staging/historical_package_*.json
           retention-days: 30
 
       - name: 完成日志
         run: |
           echo "✅ 历史数据采集完成: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+          if ls staging/ | grep -q "historical_package"; then
+            echo "📦 Artifact 已生成"
+          else
+            echo "⚠️ 未生成 historical_package，请检查日志"
+          fi
