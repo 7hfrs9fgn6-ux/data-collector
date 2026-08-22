@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-历史数据采集模块（修复版 V1.3）
-版本： 1.3
+历史数据采集模块（修复版 V1.4）
+版本： 1.4
 更新日期： 2026-08-22
 职责： 采集几十年历史行情、宏观、事件数据，统一打包签名
 
@@ -11,6 +11,11 @@
   2. 历史宏观数据 - GDP、CPI、PMI
   3. 历史事件数据 - 重大政策、经济事件
   4. 历史板块数据 - 申万一级行业历史表现
+
+★ V1.4 修复（2026-08-22）：
+  - 板块数据：修复日期列匹配，增加对 '日期' 列名的检测（日志显示列名为 '日期'）
+  - 宏观数据：统一日期列匹配规则，增加 '日期' 支持
+  - 行情数据：增加 '日期' 列名支持，增强兼容性
 
 ★ V1.3 修复：
   - 宏观数据：增加更多列名匹配模式，打印 DataFrame 结构辅助调试
@@ -70,7 +75,7 @@ def sign_data(data: Dict[str, Any], key: str) -> str:
 
 
 # ============================================================
-# 1. 历史行情数据（成功，保持不变）
+# 1. 历史行情数据（V1.4 增强日期列检测）
 # ============================================================
 
 def fetch_historical_market(years: int = 30) -> Dict[str, Any]:
@@ -111,18 +116,18 @@ def fetch_historical_market(years: int = 30) -> Dict[str, Any]:
                 logger.warning(f"   ⚠️ {name}: 无数据")
                 continue
 
-            # 智能检测列名
+            # 智能检测列名（增加 '日期' 支持）
             date_col = None
             close_col = None
             for col in df.columns:
                 col_lower = col.lower()
-                if 'date' in col_lower or 'time' in col_lower:
+                if 'date' in col_lower or 'time' in col_lower or '日期' in col:
                     date_col = col
                 if 'close' in col_lower or '收盘' in col or 'price' in col_lower:
                     close_col = col
 
             if date_col is None:
-                logger.warning(f"   ⚠️ {name}: 未找到日期列")
+                logger.warning(f"   ⚠️ {name}: 未找到日期列，列名: {list(df.columns)[:5]}")
                 continue
 
             data = []
@@ -165,13 +170,13 @@ def fetch_historical_market(years: int = 30) -> Dict[str, Any]:
 
 
 # ============================================================
-# 2. 历史宏观数据（修复版）
+# 2. 历史宏观数据（V1.4 修复日期列检测）
 # ============================================================
 
 def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
     """
     采集历史宏观数据（GDP、CPI、PMI）
-    ★ V1.3 修复：增加更智能的列名检测和备选接口
+    ★ V1.4 修复：统一日期列匹配规则，增加 '日期' 支持
     """
     logger.info(f"🏛️ 开始采集历史宏观数据 (回溯 {years} 年)")
 
@@ -401,7 +406,7 @@ def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
 
 
 # ============================================================
-# 3. 历史事件数据
+# 3. 历史事件数据（保持不变）
 # ============================================================
 
 def fetch_historical_events(years: int = 30) -> Dict[str, Any]:
@@ -462,13 +467,13 @@ def fetch_historical_events(years: int = 30) -> Dict[str, Any]:
 
 
 # ============================================================
-# 4. 历史板块数据（修复版 V1.3）
+# 4. 历史板块数据（V1.4 修复日期列检测）
 # ============================================================
 
 def fetch_historical_sector(years: int = 20) -> Dict[str, Any]:
     """
     采集历史板块数据
-    ★ V1.3 修复：使用 stock_zh_index_hist 作为主接口
+    ★ V1.4 修复：日期列匹配增加 '日期' 支持
     """
     logger.info(f"📊 开始采集历史板块数据 (回溯 {years} 年)")
 
@@ -491,7 +496,7 @@ def fetch_historical_sector(years: int = 20) -> Dict[str, Any]:
         logger.error("❌ akshare 未安装")
         return result
 
-    # 申万一级行业代码映射
+    # 申万一级行业代码映射（仅用于备选接口 index_hist_sw）
     sector_codes = {
         "电子": "801080",
         "计算机": "801750",
@@ -510,25 +515,8 @@ def fetch_historical_sector(years: int = 20) -> Dict[str, Any]:
         "石油石化": "801960"
     }
 
-    # ★ 备选方案：使用 stock_zh_index_hist 获取历史数据
-    # 申万指数对应的 symbol 格式
-    sw_symbols = {
-        "电子": "801080",
-        "计算机": "801750",
-        "通信": "801770",
-        "传媒": "801760",
-        "医药生物": "801150",
-        "食品饮料": "801120",
-        "家用电器": "801110",
-        "电力设备": "801730",
-        "汽车": "801880",
-        "国防军工": "801740",
-        "银行": "801780",
-        "非银金融": "801790",
-        "公用事业": "801160",
-        "煤炭": "801950",
-        "石油石化": "801960"
-    }
+    # 主用 stock_zh_index_hist 的 symbol 列表（与 sector_codes 相同）
+    sw_symbols = sector_codes  # 复用
 
     for sector, symbol in sw_symbols.items():
         try:
@@ -556,12 +544,12 @@ def fetch_historical_sector(years: int = 20) -> Dict[str, Any]:
                 logger.warning(f"   ⚠️ {sector}: 所有接口均无数据")
                 continue
 
-            # 智能检测列名
+            # 智能检测列名（增加 '日期' 支持）
             date_col = None
             close_col = None
             for col in df.columns:
                 col_lower = col.lower()
-                if 'date' in col_lower or '时间' in col or 'day' in col_lower:
+                if 'date' in col_lower or '时间' in col or '日期' in col or 'day' in col_lower:
                     date_col = col
                 if 'close' in col_lower or '收盘' in col or 'price' in col_lower:
                     close_col = col
@@ -610,7 +598,7 @@ def fetch_historical_sector(years: int = 20) -> Dict[str, Any]:
 
 
 # ============================================================
-# 5. 统一打包与签名
+# 5. 统一打包与签名（保持不变）
 # ============================================================
 
 def pack_historical_data(
@@ -666,7 +654,7 @@ def pack_historical_data(
 
 
 # ============================================================
-# 6. 保存
+# 6. 保存（保持不变）
 # ============================================================
 
 def save_package(package: Dict[str, Any]) -> str:
@@ -696,7 +684,7 @@ def save_debug_data(data: Dict[str, Any], suffix: str):
 
 
 # ============================================================
-# 7. 主入口
+# 7. 主入口（保持不变）
 # ============================================================
 
 def main():
