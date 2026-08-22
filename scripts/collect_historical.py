@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-历史数据采集模块（修复版 V1.4）
-版本： 1.4
+历史数据采集模块（修复版 V1.5）
+版本： 1.5
 更新日期： 2026-08-22
 职责： 采集几十年历史行情、宏观、事件数据，统一打包签名
 
@@ -12,18 +12,23 @@
   3. 历史事件数据 - 重大政策、经济事件
   4. 历史板块数据 - 申万一级行业历史表现
 
-★ V1.4 修复（2026-08-22）：
-  - 板块数据：修复日期列匹配，增加对 '日期' 列名的检测（日志显示列名为 '日期'）
-  - 宏观数据：统一日期列匹配规则，增加 '日期' 支持
-  - 行情数据：增加 '日期' 列名支持，增强兼容性
+★ V1.5 修复（2026-08-22）：
+  - 宏观数据：全面增强列名智能匹配，支持更多字段变体
+  - 增加调试日志，打印 DataFrame 结构和列名（仅在 debug 模式）
+  - GDP：支持 '年份'、'year'、'统计时间' 等列名
+  - CPI/PMI：支持 '日期'、'date'、'月份'、'时间' 等列名
+  - 数值列：支持 'gdp'、'cpi'、'pmi'、'总值'、'当月'、'指数'、'value' 等
+
+★ V1.4 修复：
+  - 板块数据：修复日期列匹配，增加对 '日期' 列名的检测
+  - 行情数据：增加 '日期' 列名支持
 
 ★ V1.3 修复：
-  - 宏观数据：增加更多列名匹配模式，打印 DataFrame 结构辅助调试
+  - 宏观数据：增加更多列名匹配模式
   - 板块数据：使用 stock_zh_index_hist 作为备选接口
-  - 增加更详细的错误日志
 
 ★ 使用方式：
-  python scripts/collect_historical.py --type all --years 30
+  python scripts/collect_historical.py --type all --years 30 --debug
 """
 
 import os
@@ -170,13 +175,13 @@ def fetch_historical_market(years: int = 30) -> Dict[str, Any]:
 
 
 # ============================================================
-# 2. 历史宏观数据（V1.4 修复日期列检测）
+# 2. 历史宏观数据（V1.5 全面增强）
 # ============================================================
 
-def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
+def fetch_historical_macro(years: int = 30, debug: bool = False) -> Dict[str, Any]:
     """
     采集历史宏观数据（GDP、CPI、PMI）
-    ★ V1.4 修复：统一日期列匹配规则，增加 '日期' 支持
+    ★ V1.5 增强：智能列名检测，支持更多字段变体
     """
     logger.info(f"🏛️ 开始采集历史宏观数据 (回溯 {years} 年)")
 
@@ -199,7 +204,7 @@ def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
         logger.error("❌ akshare 未安装")
         return result
 
-    # ---- GDP ----
+    # ---------- GDP ----------
     try:
         logger.info("   采集 GDP 数据...")
         gdp_data = None
@@ -209,59 +214,93 @@ def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
             try:
                 gdp_data = getattr(ak, api_name)()
                 if gdp_data is not None and not gdp_data.empty:
-                    logger.debug(f"   ✅ 使用接口: {api_name}")
+                    logger.debug(f"   ✅ GDP 使用接口: {api_name}")
                     break
             except Exception as e:
-                logger.debug(f"   {api_name} 失败: {e}")
+                logger.debug(f"   GDP {api_name} 失败: {e}")
 
         if gdp_data is not None and not gdp_data.empty:
-            logger.debug(f"   GDP 列名: {list(gdp_data.columns)}")
-            data = []
+            if debug:
+                logger.debug(f"   GDP 列名: {list(gdp_data.columns)}")
+                logger.debug(f"   GDP 前3行:\n{gdp_data.head(3).to_string()}")
+            else:
+                logger.debug(f"   GDP 列名: {list(gdp_data.columns)}")
 
+            data = []
             # 智能检测列名
             year_col = None
             value_col = None
-            for col in gdp_data.columns:
-                col_lower = col.lower()
-                if '年' in col or 'year' in col_lower:
-                    year_col = col
-                if 'value' in col_lower or 'gdp' in col_lower or '总值' in col:
-                    value_col = col
 
-            if not value_col:
-                # 尝试找任何数值列
+            # 常见年份列名
+            year_candidates = ['年份', '年', 'year', '统计时间', '时间', 'date', '指标']
+            # 常见数值列名
+            value_candidates = ['gdp', 'GDP', '总值', 'value', '数值', '亿元', '国内生产总值']
+
+            for col in gdp_data.columns:
+                col_lower = col.lower().strip()
+                if any(c in col_lower or col_lower in c for c in year_candidates):
+                    year_col = col
+                    break
+            if not year_col:
+                # 如果没找到，尝试包含'年'的列
                 for col in gdp_data.columns:
-                    if col not in [year_col, 'date', 'time', 'index']:
+                    if '年' in col or 'year' in col.lower():
+                        year_col = col
+                        break
+            if not year_col:
+                # 尝试取第一列作为年份
+                year_col = gdp_data.columns[0]
+                logger.debug(f"   GDP: 未明确年份列，使用第一列 '{year_col}'")
+
+            for col in gdp_data.columns:
+                col_lower = col.lower().strip()
+                if any(c in col_lower or col_lower in c for c in value_candidates):
+                    value_col = col
+                    break
+            if not value_col:
+                # 尝试找任何数值列（排除年份列）
+                for col in gdp_data.columns:
+                    if col != year_col and gdp_data[col].dtype in ['float64', 'int64']:
                         value_col = col
                         break
+            if not value_col:
+                # 取最后一列
+                value_col = gdp_data.columns[-1]
+                logger.debug(f"   GDP: 未明确数值列，使用最后一列 '{value_col}'")
 
-            if year_col and value_col:
-                for _, row in gdp_data.iterrows():
-                    try:
-                        year_val = row.get(year_col)
-                        if year_val is None:
-                            continue
-                        year_str = str(year_val).strip()[:4]
-                        if not year_str.isdigit():
-                            continue
-                        value = float(row.get(value_col, 0))
-                        if value > 0:
-                            data.append({"year": year_str, "gdp_yi": value})
-                    except (ValueError, TypeError, AttributeError):
+            logger.debug(f"   GDP 年份列: {year_col}, 数值列: {value_col}")
+
+            for _, row in gdp_data.iterrows():
+                try:
+                    year_val = row.get(year_col)
+                    if year_val is None:
                         continue
-            else:
-                # 如果列检测失败，尝试直接使用索引
-                logger.debug("   GDP: 列检测失败，尝试使用索引")
-                for idx, row in gdp_data.iterrows():
-                    try:
-                        row_dict = row.to_dict()
-                        values = [v for v in row_dict.values() if isinstance(v, (int, float)) and v > 0]
-                        if values:
-                            year_str = str(idx)[:4] if isinstance(idx, (int, str)) else str(idx).strip()[:4]
-                            if year_str.isdigit():
-                                data.append({"year": year_str, "gdp_yi": values[0]})
-                    except Exception:
+                    # 尝试转换为字符串并提取年份
+                    year_str = str(year_val).strip()
+                    # 如果包含'-'等，取前4位
+                    if len(year_str) >= 4 and year_str[:4].isdigit():
+                        year_str = year_str[:4]
+                    elif not year_str.isdigit():
+                        # 尝试提取数字
+                        import re
+                        digits = re.findall(r'\d{4}', year_str)
+                        if digits:
+                            year_str = digits[0]
+                        else:
+                            continue
+                    if not year_str.isdigit():
                         continue
+                    value = row.get(value_col)
+                    if value is None:
+                        continue
+                    try:
+                        value = float(value)
+                    except (ValueError, TypeError):
+                        continue
+                    if value > 0:
+                        data.append({"year": year_str, "gdp_yi": value})
+                except Exception as e:
+                    logger.debug(f"   GDP 行解析失败: {e}")
 
             if data:
                 if years > 0:
@@ -276,7 +315,7 @@ def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"   ⚠️ GDP: 采集失败 - {e}")
 
-    # ---- CPI ----
+    # ---------- CPI ----------
     try:
         logger.info("   采集 CPI 数据...")
         cpi_data = None
@@ -285,45 +324,94 @@ def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
             try:
                 cpi_data = getattr(ak, api_name)()
                 if cpi_data is not None and not cpi_data.empty:
-                    logger.debug(f"   ✅ 使用接口: {api_name}")
+                    logger.debug(f"   ✅ CPI 使用接口: {api_name}")
                     break
             except Exception as e:
-                logger.debug(f"   {api_name} 失败: {e}")
+                logger.debug(f"   CPI {api_name} 失败: {e}")
 
         if cpi_data is not None and not cpi_data.empty:
-            logger.debug(f"   CPI 列名: {list(cpi_data.columns)}")
-            data = []
+            if debug:
+                logger.debug(f"   CPI 列名: {list(cpi_data.columns)}")
+                logger.debug(f"   CPI 前3行:\n{cpi_data.head(3).to_string()}")
+            else:
+                logger.debug(f"   CPI 列名: {list(cpi_data.columns)}")
 
+            data = []
             date_col = None
             value_col = None
-            for col in cpi_data.columns:
-                col_lower = col.lower()
-                if '日期' in col or 'date' in col_lower or '时间' in col:
-                    date_col = col
-                if 'cpi' in col_lower or '当月' in col or 'value' in col_lower:
-                    value_col = col
 
+            # 常见日期列名
+            date_candidates = ['日期', 'date', '时间', '月份', 'month', '统计期间']
+            # 常见数值列名
+            value_candidates = ['cpi', 'CPI', '当月', '同比', '数值', 'value', '指数']
+
+            for col in cpi_data.columns:
+                col_lower = col.lower().strip()
+                if any(c in col_lower or col_lower in c for c in date_candidates):
+                    date_col = col
+                    break
+            if not date_col:
+                # 尝试包含'日期'或'月'的列
+                for col in cpi_data.columns:
+                    if '日期' in col or 'date' in col.lower() or '月' in col:
+                        date_col = col
+                        break
+            if not date_col:
+                # 默认第一列
+                date_col = cpi_data.columns[0]
+                logger.debug(f"   CPI: 未明确日期列，使用第一列 '{date_col}'")
+
+            for col in cpi_data.columns:
+                col_lower = col.lower().strip()
+                if any(c in col_lower or col_lower in c for c in value_candidates):
+                    value_col = col
+                    break
             if not value_col:
                 for col in cpi_data.columns:
-                    if col not in [date_col, 'index']:
+                    if col != date_col and cpi_data[col].dtype in ['float64', 'int64']:
                         value_col = col
                         break
+            if not value_col:
+                value_col = cpi_data.columns[-1]
+                logger.debug(f"   CPI: 未明确数值列，使用最后一列 '{value_col}'")
 
-            if date_col and value_col:
-                for _, row in cpi_data.iterrows():
-                    try:
-                        date_val = row.get(date_col)
-                        if date_val is None:
-                            continue
-                        if hasattr(date_val, 'strftime'):
-                            date_str = date_val.strftime("%Y-%m")
-                        else:
-                            date_str = str(date_val)[:7]
-                        cpi = float(row.get(value_col, 0))
-                        if cpi != 0:
-                            data.append({"date": date_str, "cpi": cpi})
-                    except (ValueError, TypeError, AttributeError):
+            logger.debug(f"   CPI 日期列: {date_col}, 数值列: {value_col}")
+
+            for _, row in cpi_data.iterrows():
+                try:
+                    date_val = row.get(date_col)
+                    if date_val is None:
                         continue
+                    if hasattr(date_val, 'strftime'):
+                        date_str = date_val.strftime("%Y-%m")
+                    else:
+                        date_str = str(date_val).strip()
+                        # 如果日期格式为 YYYY-MM-DD，取前7位
+                        if len(date_str) >= 7 and date_str[4] == '-':
+                            date_str = date_str[:7]
+                        elif len(date_str) >= 4 and date_str[:4].isdigit():
+                            # 可能是年份，补上月份
+                            if len(date_str) == 4:
+                                date_str = date_str + "-01"
+                            else:
+                                # 尝试提取 YYYY-MM
+                                import re
+                                match = re.search(r'(\d{4})-?(\d{1,2})', date_str)
+                                if match:
+                                    date_str = f"{match.group(1)}-{match.group(2).zfill(2)}"
+                                else:
+                                    continue
+                    cpi_val = row.get(value_col)
+                    if cpi_val is None:
+                        continue
+                    try:
+                        cpi_val = float(cpi_val)
+                    except (ValueError, TypeError):
+                        continue
+                    if cpi_val != 0:  # CPI 可能为负，保留
+                        data.append({"date": date_str, "cpi": cpi_val})
+                except Exception as e:
+                    logger.debug(f"   CPI 行解析失败: {e}")
 
             if data:
                 if years > 0:
@@ -339,7 +427,7 @@ def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"   ⚠️ CPI: 采集失败 - {e}")
 
-    # ---- PMI ----
+    # ---------- PMI ----------
     try:
         logger.info("   采集 PMI 数据...")
         pmi_data = None
@@ -348,45 +436,87 @@ def fetch_historical_macro(years: int = 30) -> Dict[str, Any]:
             try:
                 pmi_data = getattr(ak, api_name)()
                 if pmi_data is not None and not pmi_data.empty:
-                    logger.debug(f"   ✅ 使用接口: {api_name}")
+                    logger.debug(f"   ✅ PMI 使用接口: {api_name}")
                     break
             except Exception as e:
-                logger.debug(f"   {api_name} 失败: {e}")
+                logger.debug(f"   PMI {api_name} 失败: {e}")
 
         if pmi_data is not None and not pmi_data.empty:
-            logger.debug(f"   PMI 列名: {list(pmi_data.columns)}")
-            data = []
+            if debug:
+                logger.debug(f"   PMI 列名: {list(pmi_data.columns)}")
+                logger.debug(f"   PMI 前3行:\n{pmi_data.head(3).to_string()}")
+            else:
+                logger.debug(f"   PMI 列名: {list(pmi_data.columns)}")
 
+            data = []
             date_col = None
             value_col = None
-            for col in pmi_data.columns:
-                col_lower = col.lower()
-                if '日期' in col or 'date' in col_lower or '时间' in col:
-                    date_col = col
-                if 'pmi' in col_lower or 'value' in col_lower or '指数' in col:
-                    value_col = col
 
+            date_candidates = ['日期', 'date', '时间', '月份', 'month', '统计期间']
+            value_candidates = ['pmi', 'PMI', '指数', 'value', '数值', '制造业PMI']
+
+            for col in pmi_data.columns:
+                col_lower = col.lower().strip()
+                if any(c in col_lower or col_lower in c for c in date_candidates):
+                    date_col = col
+                    break
+            if not date_col:
+                for col in pmi_data.columns:
+                    if '日期' in col or 'date' in col.lower() or '月' in col:
+                        date_col = col
+                        break
+            if not date_col:
+                date_col = pmi_data.columns[0]
+                logger.debug(f"   PMI: 未明确日期列，使用第一列 '{date_col}'")
+
+            for col in pmi_data.columns:
+                col_lower = col.lower().strip()
+                if any(c in col_lower or col_lower in c for c in value_candidates):
+                    value_col = col
+                    break
             if not value_col:
                 for col in pmi_data.columns:
-                    if col not in [date_col, 'index']:
+                    if col != date_col and pmi_data[col].dtype in ['float64', 'int64']:
                         value_col = col
                         break
+            if not value_col:
+                value_col = pmi_data.columns[-1]
+                logger.debug(f"   PMI: 未明确数值列，使用最后一列 '{value_col}'")
 
-            if date_col and value_col:
-                for _, row in pmi_data.iterrows():
-                    try:
-                        date_val = row.get(date_col)
-                        if date_val is None:
-                            continue
-                        if hasattr(date_val, 'strftime'):
-                            date_str = date_val.strftime("%Y-%m")
-                        else:
-                            date_str = str(date_val)[:7]
-                        pmi = float(row.get(value_col, 0))
-                        if pmi > 0:
-                            data.append({"date": date_str, "pmi": pmi})
-                    except (ValueError, TypeError, AttributeError):
+            logger.debug(f"   PMI 日期列: {date_col}, 数值列: {value_col}")
+
+            for _, row in pmi_data.iterrows():
+                try:
+                    date_val = row.get(date_col)
+                    if date_val is None:
                         continue
+                    if hasattr(date_val, 'strftime'):
+                        date_str = date_val.strftime("%Y-%m")
+                    else:
+                        date_str = str(date_val).strip()
+                        if len(date_str) >= 7 and date_str[4] == '-':
+                            date_str = date_str[:7]
+                        elif len(date_str) >= 4 and date_str[:4].isdigit():
+                            if len(date_str) == 4:
+                                date_str = date_str + "-01"
+                            else:
+                                import re
+                                match = re.search(r'(\d{4})-?(\d{1,2})', date_str)
+                                if match:
+                                    date_str = f"{match.group(1)}-{match.group(2).zfill(2)}"
+                                else:
+                                    continue
+                    pmi_val = row.get(value_col)
+                    if pmi_val is None:
+                        continue
+                    try:
+                        pmi_val = float(pmi_val)
+                    except (ValueError, TypeError):
+                        continue
+                    if pmi_val > 0:
+                        data.append({"date": date_str, "pmi": pmi_val})
+                except Exception as e:
+                    logger.debug(f"   PMI 行解析失败: {e}")
 
             if data:
                 if years > 0:
@@ -496,7 +626,7 @@ def fetch_historical_sector(years: int = 20) -> Dict[str, Any]:
         logger.error("❌ akshare 未安装")
         return result
 
-    # 申万一级行业代码映射（仅用于备选接口 index_hist_sw）
+    # 申万一级行业代码映射
     sector_codes = {
         "电子": "801080",
         "计算机": "801750",
@@ -515,8 +645,8 @@ def fetch_historical_sector(years: int = 20) -> Dict[str, Any]:
         "石油石化": "801960"
     }
 
-    # 主用 stock_zh_index_hist 的 symbol 列表（与 sector_codes 相同）
-    sw_symbols = sector_codes  # 复用
+    # 主用 stock_zh_index_hist 的 symbol 列表
+    sw_symbols = sector_codes
 
     for sector, symbol in sw_symbols.items():
         try:
@@ -684,7 +814,7 @@ def save_debug_data(data: Dict[str, Any], suffix: str):
 
 
 # ============================================================
-# 7. 主入口（保持不变）
+# 7. 主入口（传递 debug 参数）
 # ============================================================
 
 def main():
@@ -692,7 +822,7 @@ def main():
     parser.add_argument('--type', choices=['market', 'macro', 'events', 'sector', 'all'],
                        default='all', help='数据类型')
     parser.add_argument('--years', type=int, default=30, help='回溯年数（默认30）')
-    parser.add_argument('--debug', action='store_true', help='启用调试模式')
+    parser.add_argument('--debug', action='store_true', help='启用调试模式（打印更多信息）')
     args = parser.parse_args()
 
     logger.info(f"🚀 开始采集历史数据 (类型: {args.type}, 年数: {args.years})")
@@ -708,7 +838,7 @@ def main():
             save_debug_data(market_data, 'market')
 
     if args.type in ['macro', 'all']:
-        macro_data = fetch_historical_macro(args.years)
+        macro_data = fetch_historical_macro(args.years, debug=args.debug)
         if args.debug:
             save_debug_data(macro_data, 'macro')
 
