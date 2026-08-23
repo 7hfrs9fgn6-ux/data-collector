@@ -2,37 +2,16 @@
 # -*- coding: utf-8 -*-
 """
 宏观高级数据采集模块（日频/最新值）
-版本： V1.0
+版本： V1.1
 更新日期： 2026-08-23
 职责： 每日采集用于宏观象限判断的日频/最新宏观数据
 
-★ 采集内容：
-  1. 十年期国债收益率（日频）
-  2. M2货币供应量（最新月度）
-  3. 社会融资规模（最新月度）
-  4. PPI（最新月度）
-  5. SHIBOR隔夜/1周（日频）
-
-★ 数据用途：
-  - pre阶段：达利欧宏观象限检测器（国债收益率、M2、PPI）
-  - intraday_a/b阶段：SHIBOR资金面感知
-  - night阶段：外围流动性环境判断
-
-★ 采集频率：
-  - 每个交易日采集一次（建议 09:00 前完成）
-  - 国债收益率/SHIBOR：日频
-  - M2/社融/PPI：月度发布，但每日拉取最新值（若无更新则沿用旧值）
-
-★ 输出格式：
-  - macro_advanced_package_{timestamp}.json
-  - 包含 signature（HMAC-SHA256）
-
-★ 使用方式：
-  python scripts/collect_macro_advanced.py
-
-★ 与 collect_historical.py 的区别：
-  - collect_historical.py：采集历史全量数据（30年），供AI记忆体学习
-  - collect_macro_advanced.py：采集每日最新数据，供pre公式实时判断
+★ V1.1 修复（2026-08-23）：
+  - M2：增加日期解析和时间排序，取最新月份数据
+  - 社会融资规模：增加日期解析和时间排序，取最新月份数据
+  - PPI：增加日期解析和时间排序，取最新月份数据
+  - 国债收益率：增加备用接口 bond_china_yield
+  - 增加数据合理性校验（M2/社融/PPI 值域检查）
 """
 
 import os
@@ -43,6 +22,7 @@ import logging
 import time
 import hmac
 import hashlib
+import re
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 
@@ -84,6 +64,68 @@ def get_signing_key() -> str:
     return SIGNING_KEY
 
 
+def parse_chinese_date(date_str: str) -> Optional[str]:
+    """
+    解析中文日期格式为 YYYY-MM
+    支持格式：
+      - "2008年01" -> "2008-01"
+      - "202604" -> "2026-04"
+      - "2026-08-23" -> "2026-08"
+      - "2026年8月" -> "2026-08"
+    """
+    if date_str is None:
+        return None
+    
+    date_str = str(date_str).strip()
+    
+    # 格式: "2008年01" 或 "2008年1月"
+    match = re.search(r'(\d{4})年(\d{1,2})(?:月)?', date_str)
+    if match:
+        return f"{match.group(1)}-{match.group(2).zfill(2)}"
+    
+    # 格式: "202604" (6位数字)
+    match = re.search(r'^(\d{4})(\d{2})$', date_str)
+    if match:
+        return f"{match.group(1)}-{match.group(2)}"
+    
+    # 格式: "2026-08-23" -> 取前7位
+    if len(date_str) >= 7 and date_str[4] == '-':
+        return date_str[:7]
+    
+    # 格式: "2026年08月"
+    match = re.search(r'(\d{4})年(\d{1,2})月', date_str)
+    if match:
+        return f"{match.group(1)}-{match.group(2).zfill(2)}"
+    
+    # 如果只是年份（4位数字）
+    if re.match(r'^\d{4}$', date_str):
+        return f"{date_str}-01"
+    
+    return None
+
+
+def is_data_reasonable(data_type: str, value: float) -> bool:
+    """
+    数据合理性校验
+    """
+    if data_type == 'm2':
+        # M2 应在 100-500 万亿元之间（中国M2约305万亿）
+        return 100 <= value <= 500
+    elif data_type == 'social_financing':
+        # 社会融资规模存量应在 100-500 万亿元之间
+        return 100 <= value <= 500
+    elif data_type == 'ppi':
+        # PPI 同比一般在 -10% ~ +20% 之间
+        return -15 <= value <= 25
+    elif data_type == 'bond_yield':
+        # 国债收益率一般在 1% ~ 6% 之间
+        return 1 <= value <= 6
+    elif data_type == 'shibor':
+        # SHIBOR 一般在 0.5% ~ 10% 之间
+        return 0.5 <= value <= 10
+    return True
+
+
 # ============================================================
 # 1. 十年期国债收益率（日频）
 # ============================================================
@@ -97,13 +139,26 @@ def fetch_bond_yield() -> Optional[Dict[str, Any]]:
     logger.info("   采集十年期国债收益率...")
     try:
         import akshare as ak
+        
         # 方法1：使用 bond_gb_zh_sina
         try:
             df = ak.bond_gb_zh_sina(symbol="中国10年期国债")
             if df is not None and not df.empty:
-                # 取最新一条
-                latest = df.iloc[-1]
-                date_val = latest.get('日期') or latest.get('date') or latest.get('time')
+                # 按日期排序，取最新
+                date_col = None
+                for col in df.columns:
+                    if '日期' in col or 'date' in col.lower() or '时间' in col:
+                        date_col = col
+                        break
+                if date_col:
+                    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+                    df = df.sort_values(date_col, ascending=False)
+                    latest = df.iloc[0]
+                else:
+                    latest = df.iloc[-1]
+                
+                # 获取日期
+                date_val = latest.get(date_col) if date_col else None
                 if date_val is None:
                     date_val = datetime.now().strftime("%Y-%m-%d")
                 elif hasattr(date_val, 'strftime'):
@@ -111,7 +166,7 @@ def fetch_bond_yield() -> Optional[Dict[str, Any]]:
                 else:
                     date_val = str(date_val)[:10]
                 
-                # 收益率列名可能是 '收益率' 或 'value' 或 'yield'
+                # 收益率列名
                 value = None
                 for col in ['收益率', 'yield', 'value', '收盘']:
                     if col in latest:
@@ -120,32 +175,57 @@ def fetch_bond_yield() -> Optional[Dict[str, Any]]:
                             break
                         except (ValueError, TypeError):
                             continue
-                if value is not None and value > 0:
+                
+                if value is not None and is_data_reasonable('bond_yield', value):
                     logger.info(f"   ✅ 十年期国债收益率: {value:.2f}% (日期: {date_val})")
                     return {"date": date_val, "value": round(value, 2), "source": "sina"}
         except Exception as e:
             logger.debug(f"   bond_gb_zh_sina 失败: {e}")
         
-        # 方法2：使用 bond_zh_us_rate（备用）
+        # 方法2：使用 bond_china_yield（备用）
         try:
-            df = ak.bond_zh_us_rate()
+            df = ak.bond_china_yield(start_date="2026-01-01")
             if df is not None and not df.empty:
-                # 中国十年期国债可能在 '中国' 行
+                # 查找 '10年' 行
                 for _, row in df.iterrows():
-                    if '中国' in str(row.get('国家', '')) and '10年' in str(row.get('期限', '')):
-                        value = row.get('收益率')
+                    term = row.get('期限') or row.get('term') or row.get('品种')
+                    if term and ('10年' in str(term) or '10Y' in str(term)):
+                        value = row.get('收益率') or row.get('yield') or row.get('value')
                         if value:
                             try:
                                 value = float(value)
-                                date_val = datetime.now().strftime("%Y-%m-%d")
-                                logger.info(f"   ✅ 十年期国债收益率(备用): {value:.2f}%")
-                                return {"date": date_val, "value": round(value, 2), "source": "bond_zh_us_rate"}
+                                if is_data_reasonable('bond_yield', value):
+                                    date_val = datetime.now().strftime("%Y-%m-%d")
+                                    logger.info(f"   ✅ 十年期国债收益率(备用): {value:.2f}%")
+                                    return {"date": date_val, "value": round(value, 2), "source": "bond_china_yield"}
                             except:
                                 pass
         except Exception as e:
+            logger.debug(f"   bond_china_yield 失败: {e}")
+        
+        # 方法3：使用 bond_zh_us_rate（作为最后备选）
+        try:
+            df = ak.bond_zh_us_rate()
+            if df is not None and not df.empty:
+                for _, row in df.iterrows():
+                    country = row.get('国家') or row.get('country')
+                    if country and '中国' in str(country):
+                        term = row.get('期限') or row.get('term')
+                        if term and ('10年' in str(term) or '10Y' in str(term)):
+                            value = row.get('收益率') or row.get('yield')
+                            if value:
+                                try:
+                                    value = float(value)
+                                    if is_data_reasonable('bond_yield', value):
+                                        date_val = datetime.now().strftime("%Y-%m-%d")
+                                        logger.info(f"   ✅ 十年期国债收益率(备选2): {value:.2f}%")
+                                        return {"date": date_val, "value": round(value, 2), "source": "bond_zh_us_rate"}
+                                except:
+                                    pass
+        except Exception as e:
             logger.debug(f"   bond_zh_us_rate 失败: {e}")
         
-        logger.warning("   ⚠️ 十年期国债收益率采集失败")
+        logger.warning("   ⚠️ 十年期国债收益率采集失败（所有接口均失败）")
         return None
     except ImportError:
         logger.error("   ❌ akshare 未安装")
@@ -168,44 +248,58 @@ def fetch_m2() -> Optional[Dict[str, Any]]:
     logger.info("   采集M2货币供应量...")
     try:
         import akshare as ak
+        import pandas as pd
+        
         df = ak.macro_china_money_supply()
         if df is None or df.empty:
             logger.warning("   ⚠️ M2数据为空")
             return None
         
-        # 列名可能为 '月份' 和 '货币供应量-M2'
+        logger.debug(f"   M2 列名: {list(df.columns)}")
+        
+        # 识别列名
         month_col = None
         value_col = None
         for col in df.columns:
-            if '月份' in col or 'month' in col.lower():
+            if '月份' in col or 'date' in col.lower() or '时间' in col:
                 month_col = col
-            if 'M2' in col or '货币供应量' in col:
+            if 'M2' in col and '货币' in col:
                 value_col = col
         
-        if month_col is None or value_col is None:
-            # 尝试直接取前两列
+        if month_col is None:
             month_col = df.columns[0]
+        if value_col is None:
+            # 尝试找包含'M2'的列
+            for col in df.columns:
+                if 'M2' in col:
+                    value_col = col
+                    break
+        if value_col is None:
             value_col = df.columns[1]
-            logger.debug(f"   M2 使用列: {month_col} -> {value_col}")
         
-        latest = df.iloc[-1]
-        month_val = latest.get(month_col)
-        if month_val is None:
-            month_val = datetime.now().strftime("%Y-%m")
-        elif hasattr(month_val, 'strftime'):
-            month_val = month_val.strftime("%Y-%m")
-        else:
-            month_val = str(month_val)[:7]
+        # 解析日期并排序
+        df['_parse_date'] = df[month_col].apply(lambda x: parse_chinese_date(str(x)) if x else None)
+        df = df.dropna(subset=['_parse_date'])
         
+        if df.empty:
+            logger.warning("   ⚠️ M2日期解析失败")
+            return None
+        
+        # 按日期排序，取最新
+        df['_sort_date'] = pd.to_datetime(df['_parse_date'] + '-01', errors='coerce')
+        df = df.sort_values('_sort_date', ascending=False)
+        latest = df.iloc[0]
+        
+        month_val = latest.get('_parse_date')
         value = latest.get(value_col)
+        
         if value is None:
             logger.warning("   ⚠️ M2值缺失")
             return None
+        
         try:
             value = float(value)
         except (ValueError, TypeError):
-            # 可能带单位，尝试提取数字
-            import re
             val_str = str(value).replace(',', '').replace('万亿元', '').strip()
             nums = re.findall(r'[\d.]+', val_str)
             if nums:
@@ -214,12 +308,13 @@ def fetch_m2() -> Optional[Dict[str, Any]]:
                 logger.warning(f"   ⚠️ M2值解析失败: {value}")
                 return None
         
-        if value > 0:
-            logger.info(f"   ✅ M2: {value:.1f}万亿元 (月份: {month_val})")
-            return {"date": month_val, "value": round(value, 1), "unit": "万亿元", "source": "eastmoney"}
-        else:
-            logger.warning(f"   ⚠️ M2值异常: {value}")
+        # 数据合理性校验
+        if not is_data_reasonable('m2', value):
+            logger.warning(f"   ⚠️ M2值异常: {value}万亿元（预期100-500）")
             return None
+        
+        logger.info(f"   ✅ M2: {value:.1f}万亿元 (月份: {month_val})")
+        return {"date": month_val, "value": round(value, 1), "unit": "万亿元", "source": "eastmoney"}
     except ImportError:
         logger.error("   ❌ akshare 未安装")
         return None
@@ -241,41 +336,55 @@ def fetch_social_financing() -> Optional[Dict[str, Any]]:
     logger.info("   采集社会融资规模...")
     try:
         import akshare as ak
+        import pandas as pd
+        
         df = ak.macro_china_shrzgm()
         if df is None or df.empty:
             logger.warning("   ⚠️ 社会融资规模数据为空")
             return None
         
-        # 列名可能为 '月份' 和 '社会融资规模'
+        logger.debug(f"   社融 列名: {list(df.columns)}")
+        
         month_col = None
         value_col = None
         for col in df.columns:
-            if '月份' in col or 'month' in col.lower():
+            if '月份' in col or 'date' in col.lower() or '时间' in col:
                 month_col = col
             if '社会融资' in col or '规模' in col:
                 value_col = col
         
-        if month_col is None or value_col is None:
+        if month_col is None:
             month_col = df.columns[0]
+        if value_col is None:
+            for col in df.columns:
+                if '融资' in col or '存量' in col:
+                    value_col = col
+                    break
+        if value_col is None:
             value_col = df.columns[1]
         
-        latest = df.iloc[-1]
-        month_val = latest.get(month_col)
-        if month_val is None:
-            month_val = datetime.now().strftime("%Y-%m")
-        elif hasattr(month_val, 'strftime'):
-            month_val = month_val.strftime("%Y-%m")
-        else:
-            month_val = str(month_val)[:7]
+        # 解析日期并排序
+        df['_parse_date'] = df[month_col].apply(lambda x: parse_chinese_date(str(x)) if x else None)
+        df = df.dropna(subset=['_parse_date'])
         
+        if df.empty:
+            logger.warning("   ⚠️ 社融日期解析失败")
+            return None
+        
+        df['_sort_date'] = pd.to_datetime(df['_parse_date'] + '-01', errors='coerce')
+        df = df.sort_values('_sort_date', ascending=False)
+        latest = df.iloc[0]
+        
+        month_val = latest.get('_parse_date')
         value = latest.get(value_col)
+        
         if value is None:
             logger.warning("   ⚠️ 社会融资规模值缺失")
             return None
+        
         try:
             value = float(value)
         except (ValueError, TypeError):
-            import re
             val_str = str(value).replace(',', '').replace('万亿元', '').strip()
             nums = re.findall(r'[\d.]+', val_str)
             if nums:
@@ -284,12 +393,13 @@ def fetch_social_financing() -> Optional[Dict[str, Any]]:
                 logger.warning(f"   ⚠️ 社会融资规模值解析失败: {value}")
                 return None
         
-        if value > 0:
-            logger.info(f"   ✅ 社会融资规模: {value:.1f}万亿元 (月份: {month_val})")
-            return {"date": month_val, "value": round(value, 1), "unit": "万亿元", "source": "data-center"}
-        else:
-            logger.warning(f"   ⚠️ 社会融资规模值异常: {value}")
+        # 数据合理性校验
+        if not is_data_reasonable('social_financing', value):
+            logger.warning(f"   ⚠️ 社会融资规模值异常: {value}万亿元（预期100-500）")
             return None
+        
+        logger.info(f"   ✅ 社会融资规模: {value:.1f}万亿元 (月份: {month_val})")
+        return {"date": month_val, "value": round(value, 1), "unit": "万亿元", "source": "data-center"}
     except ImportError:
         logger.error("   ❌ akshare 未安装")
         return None
@@ -311,44 +421,68 @@ def fetch_ppi() -> Optional[Dict[str, Any]]:
     logger.info("   采集PPI...")
     try:
         import akshare as ak
+        import pandas as pd
+        
         df = ak.macro_china_ppi()
         if df is None or df.empty:
             logger.warning("   ⚠️ PPI数据为空")
             return None
         
-        # 列名可能为 '日期' 和 'PPI' 或 '工业品出厂价格'
+        logger.debug(f"   PPI 列名: {list(df.columns)}")
+        
         date_col = None
         value_col = None
         for col in df.columns:
-            if '日期' in col or 'date' in col.lower():
+            if '日期' in col or 'date' in col.lower() or '时间' in col:
                 date_col = col
             if 'PPI' in col or '工业品' in col:
                 value_col = col
         
-        if date_col is None or value_col is None:
+        if date_col is None:
             date_col = df.columns[0]
+        if value_col is None:
+            for col in df.columns:
+                if '同比' in col or '价格' in col:
+                    value_col = col
+                    break
+        if value_col is None:
             value_col = df.columns[1]
         
-        latest = df.iloc[-1]
-        date_val = latest.get(date_col)
-        if date_val is None:
-            date_val = datetime.now().strftime("%Y-%m")
-        elif hasattr(date_val, 'strftime'):
-            date_val = date_val.strftime("%Y-%m")
-        else:
-            date_val = str(date_val)[:7]
+        # 解析日期并排序
+        df['_parse_date'] = df[date_col].apply(lambda x: parse_chinese_date(str(x)) if x else None)
+        df = df.dropna(subset=['_parse_date'])
         
+        if df.empty:
+            logger.warning("   ⚠️ PPI日期解析失败")
+            return None
+        
+        df['_sort_date'] = pd.to_datetime(df['_parse_date'] + '-01', errors='coerce')
+        df = df.sort_values('_sort_date', ascending=False)
+        latest = df.iloc[0]
+        
+        date_val = latest.get('_parse_date')
         value = latest.get(value_col)
+        
         if value is None:
             logger.warning("   ⚠️ PPI值缺失")
             return None
+        
         try:
             value = float(value)
         except (ValueError, TypeError):
-            logger.warning(f"   ⚠️ PPI值解析失败: {value}")
+            val_str = str(value).replace('%', '').replace('+', '').strip()
+            nums = re.findall(r'[\d.]+', val_str)
+            if nums:
+                value = float(nums[0])
+            else:
+                logger.warning(f"   ⚠️ PPI值解析失败: {value}")
+                return None
+        
+        # 数据合理性校验（PPI可能在-10%到+20%之间）
+        if not is_data_reasonable('ppi', value):
+            logger.warning(f"   ⚠️ PPI值异常: {value}%（预期-15~25）")
             return None
         
-        # PPI可以是负数（通缩），所以不要求 > 0
         logger.info(f"   ✅ PPI: {value:+.1f}% (月份: {date_val})")
         return {"date": date_val, "value": round(value, 1), "unit": "%", "source": "eastmoney"}
     except ImportError:
@@ -372,15 +506,19 @@ def fetch_shibor() -> Optional[Dict[str, Any]]:
     logger.info("   采集SHIBOR...")
     try:
         import akshare as ak
+        import pandas as pd
+        
         df = ak.macro_china_shibor_all()
         if df is None or df.empty:
             logger.warning("   ⚠️ SHIBOR数据为空")
             return None
         
-        # 列名可能是 '日期' 和 '隔夜'、'1周' 等
+        logger.debug(f"   SHIBOR 列名: {list(df.columns)}")
+        
         date_col = None
         overnight_col = None
         week_col = None
+        
         for col in df.columns:
             if '日期' in col or 'date' in col.lower():
                 date_col = col
@@ -392,7 +530,6 @@ def fetch_shibor() -> Optional[Dict[str, Any]]:
         if date_col is None:
             date_col = df.columns[0]
         if overnight_col is None:
-            # 尝试找包含 '隔夜' 的列
             for col in df.columns:
                 if '隔夜' in col:
                     overnight_col = col
@@ -403,7 +540,16 @@ def fetch_shibor() -> Optional[Dict[str, Any]]:
                     week_col = col
                     break
         
-        latest = df.iloc[-1]
+        # 按日期排序取最新
+        try:
+            df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+            df = df.sort_values(date_col, ascending=False)
+        except:
+            pass
+        
+        latest = df.iloc[0]
+        
+        # 获取日期
         date_val = latest.get(date_col)
         if date_val is None:
             date_val = datetime.now().strftime("%Y-%m-%d")
@@ -414,25 +560,27 @@ def fetch_shibor() -> Optional[Dict[str, Any]]:
         
         overnight = None
         week = None
+        
         if overnight_col:
             try:
                 overnight = float(latest.get(overnight_col, 0))
             except:
                 pass
+        
         if week_col:
             try:
                 week = float(latest.get(week_col, 0))
             except:
                 pass
         
+        # 如果没找到特定列，尝试取数值列
         if overnight is None and week is None:
-            # 尝试获取所有数值列
             vals = []
             for col in df.columns:
                 if col != date_col:
                     try:
                         v = float(latest.get(col, 0))
-                        if v > 0 and v < 10:
+                        if v > 0 and v < 20:
                             vals.append(v)
                     except:
                         pass
@@ -470,15 +618,13 @@ def pack_macro_advanced(
     ppi: Optional[Dict],
     shibor: Optional[Dict]
 ) -> Dict[str, Any]:
-    """
-    将采集到的所有数据打包为统一格式，并签名
-    """
+    """将所有采集到的数据打包为统一格式，并签名"""
     logger.info("📦 开始打包宏观高级数据...")
     
     package = {
         "package_type": "macro_advanced",
         "generated_at": datetime.now().isoformat(),
-        "version": "1.0",
+        "version": "1.1",
         "contents": {}
     }
     
@@ -562,7 +708,7 @@ def main():
     parser.add_argument('--social', action='store_true', help='仅采集社会融资规模')
     parser.add_argument('--ppi', action='store_true', help='仅采集PPI')
     parser.add_argument('--shibor', action='store_true', help='仅采集SHIBOR')
-    parser.add_argument('--debug', action='store_true', help='启用调试模式')
+    parser.add_argument('--debug', action='store_true', help='启用调试模式（打印列名）')
     args = parser.parse_args()
     
     if args.debug:
@@ -616,6 +762,11 @@ def main():
     logger.info(f"   📦 输出文件: {filepath}")
     logger.info(f"   📊 数据类型: {list(package['contents'].keys())}")
     logger.info(f"   🔐 签名状态: {'✅ 已签名' if package.get('signature') else '⚠️ 未签名'}")
+    
+    # 如果数据质量不好，返回非0退出码
+    if len(package['contents']) < 3:
+        logger.warning("⚠️ 采集到的数据类型少于3个，数据质量可能有问题")
+        return 1
     
     return 0
 
