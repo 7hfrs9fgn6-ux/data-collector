@@ -1,0 +1,35 @@
+name: 采集宏观高级数据（日频）
+
+on:
+  schedule:
+    # 每个交易日 08:30（北京时间）采集一次，pre 阶段 09:00 前可用
+    - cron: '30 0 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 签出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 安装依赖
+        run: |
+          pip install akshare pandas requests
+
+      - name: 运行采集脚本
+        run: python scripts/collect_macro_advanced.py
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+
+      - name: 上传 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macro-advanced-data
+          path: staging/macro_advanced_package_*.json
+          retention-days: 30
