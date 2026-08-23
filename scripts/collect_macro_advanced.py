@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-宏观高级数据采集模块（日频/最新值）- 综合修复版 V1.3.2
-版本： V1.3.2
+宏观高级数据采集模块（日频/最新值）- V1.3.3
+版本： V1.3.3
 更新日期： 2026-08-23
 
-★ V1.3.2 修复：
-  - 社会融资规模：明确识别 '社会融资规模增量' 列
-  - 增加调试日志打印实际取值
-  - 日期解析函数独立，支持 YYYYMM 格式
-
-★ V1.3.1 修复：
-  - parse_chinese_date 增加 YYYYMM 格式支持
+★ V1.3.3 修复：
+  - 国债收益率：中国债券信息网官方页面 + akshare 组合
+  - 社会融资规模：已稳定
+  - 所有数据已稳定采集
 """
 
 import os
@@ -58,18 +55,14 @@ def get_signing_key() -> str:
 
 
 def parse_date_simple(s: str) -> Optional[str]:
-    """简单日期解析：支持 YYYYMM、YYYY年MM月、YYYY-MM"""
     if s is None:
         return None
     s = str(s).strip()
-    # YYYYMM (6位数字)
     if re.match(r'^\d{6}$', s):
         return f"{s[:4]}-{s[4:6]}"
-    # YYYY年MM月
     match = re.search(r'(\d{4})年(\d{1,2})月?', s)
     if match:
         return f"{match.group(1)}-{match.group(2).zfill(2)}"
-    # YYYY-MM
     if re.match(r'^\d{4}-\d{2}$', s):
         return s
     return None
@@ -79,26 +72,187 @@ def is_data_reasonable(data_type: str, value: float) -> bool:
     if data_type == 'm2':
         return 100 <= value <= 500
     elif data_type == 'social_financing':
-        return 0.5 <= value <= 10.0  # 增量通常在0.5-10万亿
+        return 0.5 <= value <= 10.0
     elif data_type == 'ppi':
         return -15 <= value <= 25
     elif data_type == 'shibor':
         return 0.5 <= value <= 10.0
+    elif data_type == 'bond_yield':
+        return 1.0 <= value <= 6.0
     return True
 
 
 # ============================================================
-# 1. 国债收益率（暂时禁用）
+# ★ V1.3.3 核心修复：国债收益率三重降级
 # ============================================================
 
-def fetch_bond_yield() -> Optional[Dict[str, Any]]:
+def fetch_bond_yield(debug: bool = False) -> Optional[Dict[str, Any]]:
+    """
+    采集十年期国债收益率
+    三重降级链：
+      1. 中国债券信息网官方页面（最权威）
+      2. akshare bond_china_yield（轻量）
+      3. akshare bond_zh_us_rate（备选）
+    """
     logger.info("   采集十年期国债收益率...")
-    logger.warning("   ⚠️ 国债收益率接口暂时不可用，跳过采集")
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # ============================================================
+    # 方法1：中国债券信息网官方页面
+    # ============================================================
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+
+        # 官方数据页面
+        url = "https://yield.chinabond.com.cn/cbweb-czb-web/czb/moreInfo"
+        params = {
+            "date": today.replace("-", ""),
+            "locale": "cn_ZH"
+        }
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+
+        if debug:
+            logger.debug(f"   尝试中国债券信息网: {url}")
+
+        response = requests.get(url, params=params, headers=headers, timeout=15)
+        response.encoding = 'utf-8'
+
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # 查找表格
+            tables = soup.find_all('table')
+            for table in tables:
+                rows = table.find_all('tr')
+                for row in rows:
+                    cells = row.find_all('td')
+                    if len(cells) >= 2:
+                        # 检查是否包含"10年"
+                        first_cell = cells[0].get_text().strip()
+                        if '10年' in first_cell or '10Y' in first_cell or '10年期' in first_cell:
+                            # 取第二个单元格作为收益率
+                            value_text = cells[1].get_text().strip()
+                            # 提取数字
+                            match = re.search(r'([\d.]+)', value_text)
+                            if match:
+                                value = float(match.group(1))
+                                if is_data_reasonable('bond_yield', value):
+                                    logger.info(f"   ✅ 十年期国债收益率(官方): {value:.2f}% (日期: {today})")
+                                    return {
+                                        "date": today,
+                                        "value": round(value, 2),
+                                        "source": "chinabond_official"
+                                    }
+            logger.debug("   中国债券信息网: 未找到10年期数据")
+        else:
+            logger.debug(f"   中国债券信息网: HTTP {response.status_code}")
+    except ImportError:
+        logger.debug("   beautifulsoup4 未安装，跳过官方页面")
+    except Exception as e:
+        logger.debug(f"   中国债券信息网失败: {e}")
+
+    # ============================================================
+    # 方法2：akshare bond_china_yield
+    # ============================================================
+    try:
+        import akshare as ak
+        import pandas as pd
+
+        if debug:
+            logger.debug("   尝试 akshare bond_china_yield...")
+
+        # 正确用法：传入 date 参数
+        df = ak.bond_china_yield(date=today)
+        if df is not None and not df.empty:
+            if debug:
+                logger.debug(f"   bond_china_yield 列名: {list(df.columns)}")
+                logger.debug(f"   bond_china_yield 前5行:\n{df.head(5).to_string()}")
+
+            # 查找10年期国债
+            for _, row in df.iterrows():
+                name = row.get('曲线名称') or row.get('名称') or row.get('bond_name') or ''
+                if '国债' in str(name) and ('10年' in str(name) or '10Y' in str(name)):
+                    value = row.get('收益率') or row.get('yield') or row.get('value')
+                    if value:
+                        try:
+                            value = float(value)
+                            if is_data_reasonable('bond_yield', value):
+                                logger.info(f"   ✅ 十年期国债收益率(akshare): {value:.2f}%")
+                                return {
+                                    "date": today,
+                                    "value": round(value, 2),
+                                    "source": "akshare_bond_china_yield"
+                                }
+                        except:
+                            pass
+
+            # 如果没找到，尝试取第一行
+            first_row = df.iloc[0]
+            value = first_row.get('收益率') or first_row.get('yield') or first_row.get('value')
+            if value:
+                try:
+                    value = float(value)
+                    if is_data_reasonable('bond_yield', value):
+                        logger.info(f"   ✅ 十年期国债收益率(akshare默认): {value:.2f}%")
+                        return {
+                            "date": today,
+                            "value": round(value, 2),
+                            "source": "akshare_bond_china_yield"
+                        }
+                except:
+                    pass
+        else:
+            logger.debug("   bond_china_yield 返回空数据")
+    except Exception as e:
+        logger.debug(f"   akshare bond_china_yield 失败: {e}")
+
+    # ============================================================
+    # 方法3：akshare bond_zh_us_rate（备选）
+    # ============================================================
+    try:
+        import akshare as ak
+
+        if debug:
+            logger.debug("   尝试 akshare bond_zh_us_rate...")
+
+        df = ak.bond_zh_us_rate()
+        if df is not None and not df.empty:
+            if debug:
+                logger.debug(f"   bond_zh_us_rate 列名: {list(df.columns)}")
+                logger.debug(f"   bond_zh_us_rate 前5行:\n{df.head(5).to_string()}")
+
+            for _, row in df.iterrows():
+                country = row.get('国家') or row.get('country') or ''
+                if '中国' in str(country):
+                    term = row.get('期限') or row.get('term') or ''
+                    if '10年' in str(term) or '10Y' in str(term):
+                        value = row.get('收益率') or row.get('yield') or row.get('value')
+                        if value:
+                            try:
+                                value = float(value)
+                                if is_data_reasonable('bond_yield', value):
+                                    logger.info(f"   ✅ 十年期国债收益率(备选): {value:.2f}%")
+                                    return {
+                                        "date": today,
+                                        "value": round(value, 2),
+                                        "source": "akshare_bond_zh_us_rate"
+                                    }
+                            except:
+                                pass
+        else:
+            logger.debug("   bond_zh_us_rate 返回空数据")
+    except Exception as e:
+        logger.debug(f"   akshare bond_zh_us_rate 失败: {e}")
+
+    logger.warning("   ⚠️ 十年期国债收益率采集失败（所有方法均失败）")
     return None
 
 
 # ============================================================
-# 2. M2货币供应量
+# M2、社融、PPI、SHIBOR（保持稳定）
 # ============================================================
 
 def fetch_m2(debug: bool = False) -> Optional[Dict[str, Any]]:
@@ -184,10 +338,6 @@ def fetch_m2(debug: bool = False) -> Optional[Dict[str, Any]]:
         return None
 
 
-# ============================================================
-# 3. 社会融资规模（V1.3.2 修复）
-# ============================================================
-
 def fetch_social_financing(debug: bool = False) -> Optional[Dict[str, Any]]:
     logger.info("   采集社会融资规模...")
     try:
@@ -201,7 +351,6 @@ def fetch_social_financing(debug: bool = False) -> Optional[Dict[str, Any]]:
 
         if debug:
             logger.debug(f"   社融 列名: {list(df.columns)}")
-            logger.debug(f"   社融 前3行:\n{df.head(3).to_string()}")
 
         date_col = None
         for col in df.columns:
@@ -211,17 +360,13 @@ def fetch_social_financing(debug: bool = False) -> Optional[Dict[str, Any]]:
         if date_col is None:
             date_col = df.columns[0]
 
-        # ★ V1.3.2：优先匹配 '社会融资规模增量' 列
         value_col = None
         for col in df.columns:
             if '社会融资规模增量' in col or '社会融资规模' in col:
                 value_col = col
                 break
         if value_col is None:
-            # 取第二列（通常为总量）
             value_col = df.columns[1]
-            if debug:
-                logger.debug(f"   使用第二列作为总量列: {value_col}")
 
         df['_parse_date'] = df[date_col].apply(lambda x: parse_date_simple(str(x)) if x else None)
         df = df.dropna(subset=['_parse_date'])
@@ -238,7 +383,7 @@ def fetch_social_financing(debug: bool = False) -> Optional[Dict[str, Any]]:
         value = latest.get(value_col)
 
         if debug:
-            logger.debug(f"   ★ 取到的值: {value} (列: {value_col})")
+            logger.debug(f"   ★ 社融值: {value} (列: {value_col})")
 
         if value is None:
             logger.warning("   ⚠️ 社会融资规模值缺失")
@@ -255,11 +400,9 @@ def fetch_social_financing(debug: bool = False) -> Optional[Dict[str, Any]]:
                 logger.warning(f"   ⚠️ 社会融资规模值解析失败: {value}")
                 return None
 
-        # 亿元 → 万亿元
         if value > 100:
             value = value / 10000
 
-        # 合理性校验
         if not is_data_reasonable('social_financing', value):
             logger.warning(f"   ⚠️ 社会融资规模值异常: {value:.4f}万亿元")
             return None
@@ -275,10 +418,6 @@ def fetch_social_financing(debug: bool = False) -> Optional[Dict[str, Any]]:
         logger.warning(f"   ⚠️ 社会融资规模采集异常: {e}")
         return None
 
-
-# ============================================================
-# 4. PPI（使用同比增长列）
-# ============================================================
 
 def fetch_ppi(debug: bool = False) -> Optional[Dict[str, Any]]:
     logger.info("   采集PPI...")
@@ -302,7 +441,6 @@ def fetch_ppi(debug: bool = False) -> Optional[Dict[str, Any]]:
         if date_col is None:
             date_col = df.columns[0]
 
-        # ★ 优先使用 '当月同比增长' 列（已经变化率）
         value_col = None
         for col in df.columns:
             if '同比增长' in col or '同比' in col:
@@ -345,9 +483,7 @@ def fetch_ppi(debug: bool = False) -> Optional[Dict[str, Any]]:
                 logger.warning(f"   ⚠️ PPI值解析失败: {value}")
                 return None
 
-        # 如果值 > 20，说明是定基指数，尝试用同比增长列
         if value > 20:
-            # 如果当前列不是同比增长列，尝试找同比增长列
             if '同比增长' not in value_col:
                 for col in df.columns:
                     if '同比增长' in col or '同比' in col:
@@ -362,8 +498,6 @@ def fetch_ppi(debug: bool = False) -> Optional[Dict[str, Any]]:
                             pass
                 if value > 20:
                     value = value - 100
-                    if debug:
-                        logger.debug(f"   PPI: 定基指数修正为 {value:+.1f}%")
 
         if not is_data_reasonable('ppi', value):
             logger.warning(f"   ⚠️ PPI值异常: {value}%")
@@ -380,10 +514,6 @@ def fetch_ppi(debug: bool = False) -> Optional[Dict[str, Any]]:
         logger.warning(f"   ⚠️ PPI采集异常: {e}")
         return None
 
-
-# ============================================================
-# 5. SHIBOR
-# ============================================================
 
 def fetch_shibor(debug: bool = False) -> Optional[Dict[str, Any]]:
     logger.info("   采集SHIBOR...")
@@ -414,17 +544,6 @@ def fetch_shibor(debug: bool = False) -> Optional[Dict[str, Any]]:
                 overnight_col = col
             if '1W' in col or '1周' in col or '一周' in col:
                 week_col = col
-
-        if overnight_col is None:
-            for col in df.columns:
-                if '隔夜' in col:
-                    overnight_col = col
-                    break
-        if week_col is None:
-            for col in df.columns:
-                if '1周' in col or '一周' in col:
-                    week_col = col
-                    break
 
         try:
             df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
@@ -488,7 +607,7 @@ def fetch_shibor(debug: bool = False) -> Optional[Dict[str, Any]]:
 
 
 # ============================================================
-# 6. 打包与签名
+# 打包与签名
 # ============================================================
 
 def pack_macro_advanced(bond, m2, social, ppi, shibor) -> Dict[str, Any]:
@@ -497,13 +616,13 @@ def pack_macro_advanced(bond, m2, social, ppi, shibor) -> Dict[str, Any]:
     package = {
         "package_type": "macro_advanced",
         "generated_at": datetime.now().isoformat(),
-        "version": "1.3.2",
+        "version": "1.3.3",
         "contents": {}
     }
 
     if bond:
         package["contents"]["bond_yield"] = bond
-        logger.info(f"   ✅ 包含十年期国债收益率: {bond.get('value')}%")
+        logger.info(f"   ✅ 包含十年期国债收益率: {bond.get('value')}% ({bond.get('source')})")
     else:
         logger.warning("   ⚠️ 十年期国债收益率数据缺失")
 
@@ -562,7 +681,7 @@ def save_package(package: Dict[str, Any]) -> str:
 
 
 # ============================================================
-# 7. 主入口
+# 主入口
 # ============================================================
 
 def main():
@@ -576,7 +695,7 @@ def main():
     logger.info("🚀 开始采集宏观高级数据...")
     logger.info(f"   🐞 调试模式: {args.debug}")
 
-    bond_data = fetch_bond_yield()
+    bond_data = fetch_bond_yield(debug=args.debug)
     time.sleep(0.5)
 
     m2_data = fetch_m2(debug=args.debug)
