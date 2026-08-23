@@ -6,9 +6,13 @@ name: 采集宏观高级数据
 
 on:
   schedule:
-    # 每个交易日 08:30（北京时间）采集，确保 pre 阶段 09:00 前可用
     - cron: '30 0 * * 1-5'
   workflow_dispatch:
+    inputs:
+      debug:
+        description: '启用调试模式'
+        type: boolean
+        default: false
 
 jobs:
   collect:
@@ -27,7 +31,12 @@ jobs:
           pip install akshare pandas requests
 
       - name: 运行采集脚本
-        run: python scripts/collect_macro_advanced.py
+        run: |
+          if [ "${{ github.event.inputs.debug }}" == "true" ]; then
+            python scripts/collect_macro_advanced.py --debug
+          else
+            python scripts/collect_macro_advanced.py
+          fi
         env:
           SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
 
