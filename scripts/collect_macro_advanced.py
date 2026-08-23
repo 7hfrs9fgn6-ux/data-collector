@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-宏观高级数据采集模块（日频/最新值）- 综合修复版 V1.3.1
-版本： V1.3.1
+宏观高级数据采集模块（日频/最新值）- 综合修复版 V1.3.2
+版本： V1.3.2
 更新日期： 2026-08-23
 
+★ V1.3.2 修复：
+  - 社会融资规模：明确识别 '社会融资规模增量' 列
+  - 增加调试日志打印实际取值
+  - 日期解析函数独立，支持 YYYYMM 格式
+
 ★ V1.3.1 修复：
-  - parse_chinese_date 增加 YYYYMM 格式支持（如 201501 → 2015-01）
-  - 社会融资规模：使用正确的日期列名 '月份'，增加 YYYYMM 解析
-  - 国债收益率：暂时移除（接口失效），添加占位标记
-  - 增加更详细的调试日志
+  - parse_chinese_date 增加 YYYYMM 格式支持
 """
 
 import os
@@ -21,7 +23,7 @@ import time
 import hmac
 import hashlib
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Optional, Any
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -55,44 +57,21 @@ def get_signing_key() -> str:
     return SIGNING_KEY
 
 
-def parse_chinese_date(date_str: str) -> Optional[str]:
-    """
-    解析中文日期格式为 YYYY-MM
-    支持格式：
-      - "2008年01" -> "2008-01"
-      - "2008年01月" -> "2008-01"
-      - "202604" -> "2026-04"  ★ V1.3.1 新增
-      - "201501" -> "2015-01"  ★ V1.3.1 新增
-      - "2026-08-23" -> "2026-08"
-    """
-    if date_str is None:
+def parse_date_simple(s: str) -> Optional[str]:
+    """简单日期解析：支持 YYYYMM、YYYY年MM月、YYYY-MM"""
+    if s is None:
         return None
-
-    date_str = str(date_str).strip()
-
-    # 格式: "202604" (6位数字) ★ V1.3.1 新增
-    match = re.search(r'^(\d{4})(\d{2})$', date_str)
-    if match:
-        return f"{match.group(1)}-{match.group(2)}"
-
-    # 格式: "2008年01" 或 "2008年1月"
-    match = re.search(r'(\d{4})年(\d{1,2})(?:月)?', date_str)
+    s = str(s).strip()
+    # YYYYMM (6位数字)
+    if re.match(r'^\d{6}$', s):
+        return f"{s[:4]}-{s[4:6]}"
+    # YYYY年MM月
+    match = re.search(r'(\d{4})年(\d{1,2})月?', s)
     if match:
         return f"{match.group(1)}-{match.group(2).zfill(2)}"
-
-    # 格式: "2026-08-23" -> 取前7位
-    if len(date_str) >= 7 and date_str[4] == '-':
-        return date_str[:7]
-
-    # 格式: "2026年08月"
-    match = re.search(r'(\d{4})年(\d{1,2})月', date_str)
-    if match:
-        return f"{match.group(1)}-{match.group(2).zfill(2)}"
-
-    # 如果只是年份（4位数字）
-    if re.match(r'^\d{4}$', date_str):
-        return f"{date_str}-01"
-
+    # YYYY-MM
+    if re.match(r'^\d{4}-\d{2}$', s):
+        return s
     return None
 
 
@@ -100,7 +79,7 @@ def is_data_reasonable(data_type: str, value: float) -> bool:
     if data_type == 'm2':
         return 100 <= value <= 500
     elif data_type == 'social_financing':
-        return 1.0 <= value <= 30.0
+        return 0.5 <= value <= 10.0  # 增量通常在0.5-10万亿
     elif data_type == 'ppi':
         return -15 <= value <= 25
     elif data_type == 'shibor':
@@ -109,25 +88,20 @@ def is_data_reasonable(data_type: str, value: float) -> bool:
 
 
 # ============================================================
-# 1. 国债收益率（暂时禁用，接口失效）
+# 1. 国债收益率（暂时禁用）
 # ============================================================
 
 def fetch_bond_yield() -> Optional[Dict[str, Any]]:
-    """
-    采集中国十年期国债收益率
-    目前所有接口均已失效，返回 None
-    """
     logger.info("   采集十年期国债收益率...")
     logger.warning("   ⚠️ 国债收益率接口暂时不可用，跳过采集")
     return None
 
 
 # ============================================================
-# 2. M2货币供应量（已稳定）
+# 2. M2货币供应量
 # ============================================================
 
 def fetch_m2(debug: bool = False) -> Optional[Dict[str, Any]]:
-    """采集M2货币供应量（最新月度）"""
     logger.info("   采集M2货币供应量...")
     try:
         import akshare as ak
@@ -140,9 +114,7 @@ def fetch_m2(debug: bool = False) -> Optional[Dict[str, Any]]:
 
         if debug:
             logger.debug(f"   M2 列名: {list(df.columns)}")
-            logger.debug(f"   M2 前3行:\n{df.head(3).to_string()}")
 
-        # 识别列名
         date_col = None
         for col in df.columns:
             if '月份' in col or 'date' in col.lower():
@@ -151,7 +123,6 @@ def fetch_m2(debug: bool = False) -> Optional[Dict[str, Any]]:
         if date_col is None:
             date_col = df.columns[0]
 
-        # 找数值列（M2数量）
         value_col = None
         for col in df.columns:
             if 'M2' in col and '数量' in col:
@@ -165,8 +136,7 @@ def fetch_m2(debug: bool = False) -> Optional[Dict[str, Any]]:
         if value_col is None:
             value_col = df.columns[1]
 
-        # 解析日期并排序
-        df['_parse_date'] = df[date_col].apply(lambda x: parse_chinese_date(str(x)) if x else None)
+        df['_parse_date'] = df[date_col].apply(lambda x: parse_date_simple(str(x)) if x else None)
         df = df.dropna(subset=['_parse_date'])
 
         if df.empty:
@@ -195,11 +165,8 @@ def fetch_m2(debug: bool = False) -> Optional[Dict[str, Any]]:
                 logger.warning(f"   ⚠️ M2值解析失败: {value}")
                 return None
 
-        # 单位转换：亿元 → 万亿元
-        unit = "万亿元"
         if value > 1000:
             value = value / 10000
-            unit = "万亿元"
 
         if not is_data_reasonable('m2', value):
             logger.warning(f"   ⚠️ M2值异常: {value}万亿元")
@@ -209,7 +176,7 @@ def fetch_m2(debug: bool = False) -> Optional[Dict[str, Any]]:
         return {
             "date": date_val,
             "value": round(value, 1),
-            "unit": unit,
+            "unit": "万亿元",
             "source": "eastmoney"
         }
     except Exception as e:
@@ -218,11 +185,10 @@ def fetch_m2(debug: bool = False) -> Optional[Dict[str, Any]]:
 
 
 # ============================================================
-# 3. 社会融资规模（修复日期解析）
+# 3. 社会融资规模（V1.3.2 修复）
 # ============================================================
 
 def fetch_social_financing(debug: bool = False) -> Optional[Dict[str, Any]]:
-    """采集社会融资规模（最新月度）"""
     logger.info("   采集社会融资规模...")
     try:
         import akshare as ak
@@ -237,7 +203,6 @@ def fetch_social_financing(debug: bool = False) -> Optional[Dict[str, Any]]:
             logger.debug(f"   社融 列名: {list(df.columns)}")
             logger.debug(f"   社融 前3行:\n{df.head(3).to_string()}")
 
-        # 识别列名
         date_col = None
         for col in df.columns:
             if '月份' in col or 'date' in col.lower():
@@ -246,35 +211,34 @@ def fetch_social_financing(debug: bool = False) -> Optional[Dict[str, Any]]:
         if date_col is None:
             date_col = df.columns[0]
 
-        # 找数值列（社会融资规模增量）
+        # ★ V1.3.2：优先匹配 '社会融资规模增量' 列
         value_col = None
         for col in df.columns:
-            if '社会融资' in col and '增量' in col:
+            if '社会融资规模增量' in col or '社会融资规模' in col:
                 value_col = col
                 break
         if value_col is None:
-            for col in df.columns:
-                if '融资' in col or '规模' in col:
-                    value_col = col
-                    break
-        if value_col is None:
+            # 取第二列（通常为总量）
             value_col = df.columns[1]
+            if debug:
+                logger.debug(f"   使用第二列作为总量列: {value_col}")
 
-        # ★ V1.3.1 修复：使用 parse_chinese_date 解析日期（支持 YYYYMM）
-        df['_parse_date'] = df[date_col].apply(lambda x: parse_chinese_date(str(x)) if x else None)
+        df['_parse_date'] = df[date_col].apply(lambda x: parse_date_simple(str(x)) if x else None)
         df = df.dropna(subset=['_parse_date'])
 
         if df.empty:
             logger.warning("   ⚠️ 社融日期解析失败")
             return None
 
-        # 按日期排序取最新
         df['_sort_date'] = pd.to_datetime(df['_parse_date'] + '-01', errors='coerce')
         df = df.sort_values('_sort_date', ascending=False)
         latest = df.iloc[0]
 
         date_val = latest.get('_parse_date')
         value = latest.get(value_col)
+
+        if debug:
+            logger.debug(f"   ★ 取到的值: {value} (列: {value_col})")
 
         if value is None:
             logger.warning("   ⚠️ 社会融资规模值缺失")
@@ -291,21 +255,20 @@ def fetch_social_financing(debug: bool = False) -> Optional[Dict[str, Any]]:
                 logger.warning(f"   ⚠️ 社会融资规模值解析失败: {value}")
                 return None
 
-        # 单位：亿元 → 万亿元
-        unit = "万亿元"
+        # 亿元 → 万亿元
         if value > 100:
             value = value / 10000
-            unit = "万亿元"
 
+        # 合理性校验
         if not is_data_reasonable('social_financing', value):
-            logger.warning(f"   ⚠️ 社会融资规模值异常: {value}万亿元")
+            logger.warning(f"   ⚠️ 社会融资规模值异常: {value:.4f}万亿元")
             return None
 
         logger.info(f"   ✅ 社会融资规模: {value:.1f}万亿元 (月份: {date_val})")
         return {
             "date": date_val,
             "value": round(value, 1),
-            "unit": unit,
+            "unit": "万亿元",
             "source": "data-center"
         }
     except Exception as e:
@@ -314,11 +277,10 @@ def fetch_social_financing(debug: bool = False) -> Optional[Dict[str, Any]]:
 
 
 # ============================================================
-# 4. PPI（已稳定）
+# 4. PPI（使用同比增长列）
 # ============================================================
 
 def fetch_ppi(debug: bool = False) -> Optional[Dict[str, Any]]:
-    """采集PPI（最新月度）- 自动修正定基指数"""
     logger.info("   采集PPI...")
     try:
         import akshare as ak
@@ -331,9 +293,7 @@ def fetch_ppi(debug: bool = False) -> Optional[Dict[str, Any]]:
 
         if debug:
             logger.debug(f"   PPI 列名: {list(df.columns)}")
-            logger.debug(f"   PPI 前3行:\n{df.head(3).to_string()}")
 
-        # 识别列名
         date_col = None
         for col in df.columns:
             if '月份' in col or '日期' in col or 'date' in col.lower():
@@ -342,7 +302,7 @@ def fetch_ppi(debug: bool = False) -> Optional[Dict[str, Any]]:
         if date_col is None:
             date_col = df.columns[0]
 
-        # ★ 优先使用 '当月同比增长' 列（已经是变化率），其次使用 '当月'
+        # ★ 优先使用 '当月同比增长' 列（已经变化率）
         value_col = None
         for col in df.columns:
             if '同比增长' in col or '同比' in col:
@@ -356,8 +316,7 @@ def fetch_ppi(debug: bool = False) -> Optional[Dict[str, Any]]:
         if value_col is None:
             value_col = df.columns[1]
 
-        # 解析日期并排序
-        df['_parse_date'] = df[date_col].apply(lambda x: parse_chinese_date(str(x)) if x else None)
+        df['_parse_date'] = df[date_col].apply(lambda x: parse_date_simple(str(x)) if x else None)
         df = df.dropna(subset=['_parse_date'])
 
         if df.empty:
@@ -386,26 +345,25 @@ def fetch_ppi(debug: bool = False) -> Optional[Dict[str, Any]]:
                 logger.warning(f"   ⚠️ PPI值解析失败: {value}")
                 return None
 
-        # ★ 自动修正：如果值 > 20，说明是定基指数，转为变化率
+        # 如果值 > 20，说明是定基指数，尝试用同比增长列
         if value > 20:
-            # 如果同时存在 '当月同比增长' 列，用那个值
+            # 如果当前列不是同比增长列，尝试找同比增长列
             if '同比增长' not in value_col:
-                # 尝试找 '当月同比增长' 列
                 for col in df.columns:
                     if '同比增长' in col or '同比' in col:
                         try:
                             actual_value = float(latest.get(col, 0))
                             if -15 <= actual_value <= 25:
                                 value = actual_value
-                                logger.debug(f"   PPI: 使用 '同比增长' 列值: {value:+.1f}%")
+                                if debug:
+                                    logger.debug(f"   PPI: 使用同比增长列: {value:+.1f}%")
                                 break
                         except:
                             pass
                 if value > 20:
                     value = value - 100
-                    logger.debug(f"   PPI: 检测到定基指数，自动修正为 {value:+.1f}%")
-        elif value > 10 and value < 20:
-            logger.debug(f"   PPI值在10-20之间，可能异常: {value}")
+                    if debug:
+                        logger.debug(f"   PPI: 定基指数修正为 {value:+.1f}%")
 
         if not is_data_reasonable('ppi', value):
             logger.warning(f"   ⚠️ PPI值异常: {value}%")
@@ -424,11 +382,10 @@ def fetch_ppi(debug: bool = False) -> Optional[Dict[str, Any]]:
 
 
 # ============================================================
-# 5. SHIBOR（已稳定）
+# 5. SHIBOR
 # ============================================================
 
 def fetch_shibor(debug: bool = False) -> Optional[Dict[str, Any]]:
-    """采集SHIBOR隔夜和1周利率"""
     logger.info("   采集SHIBOR...")
     try:
         import akshare as ak
@@ -469,7 +426,6 @@ def fetch_shibor(debug: bool = False) -> Optional[Dict[str, Any]]:
                     week_col = col
                     break
 
-        # 按日期排序取最新
         try:
             df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
             df = df.sort_values(date_col, ascending=False)
@@ -541,7 +497,7 @@ def pack_macro_advanced(bond, m2, social, ppi, shibor) -> Dict[str, Any]:
     package = {
         "package_type": "macro_advanced",
         "generated_at": datetime.now().isoformat(),
-        "version": "1.3.1",
+        "version": "1.3.2",
         "contents": {}
     }
 
@@ -549,7 +505,7 @@ def pack_macro_advanced(bond, m2, social, ppi, shibor) -> Dict[str, Any]:
         package["contents"]["bond_yield"] = bond
         logger.info(f"   ✅ 包含十年期国债收益率: {bond.get('value')}%")
     else:
-        logger.warning("   ⚠️ 十年期国债收益率数据缺失（接口暂不可用）")
+        logger.warning("   ⚠️ 十年期国债收益率数据缺失")
 
     if m2:
         package["contents"]["m2"] = m2
@@ -611,7 +567,7 @@ def save_package(package: Dict[str, Any]) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description='采集宏观高级数据（日频/最新值）')
-    parser.add_argument('--debug', action='store_true', help='启用调试模式（打印列名）')
+    parser.add_argument('--debug', action='store_true', help='启用调试模式')
     args = parser.parse_args()
 
     if args.debug:
@@ -620,7 +576,6 @@ def main():
     logger.info("🚀 开始采集宏观高级数据...")
     logger.info(f"   🐞 调试模式: {args.debug}")
 
-    # 国债收益率（暂时跳过）
     bond_data = fetch_bond_yield()
     time.sleep(0.5)
 
