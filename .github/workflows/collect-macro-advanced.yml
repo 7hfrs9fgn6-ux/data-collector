@@ -1,8 +1,12 @@
-name: 采集宏观高级数据（日频）
+# .github/workflows/collect-macro-advanced.yml
+# 宏观高级数据采集（日频/最新值）
+# 触发：每个交易日 08:30（北京时间）
+
+name: 采集宏观高级数据
 
 on:
   schedule:
-    # 每个交易日 08:30（北京时间）采集一次，pre 阶段 09:00 前可用
+    # 每个交易日 08:30（北京时间）采集，确保 pre 阶段 09:00 前可用
     - cron: '30 0 * * 1-5'
   workflow_dispatch:
 
