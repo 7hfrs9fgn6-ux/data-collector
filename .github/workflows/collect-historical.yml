@@ -1,13 +1,13 @@
-# data-collector 历史数据采集工作流（修正版）
+# data-collector 历史数据采集工作流
 # 采集：几十年历史行情、宏观、事件、板块数据
-# 频率：每12小时一次（数据量较大，无需高频）
-# ★ ★ ★ 2026-08-22 修正：使用自包含的 collect_historical.py ★ ★ ★
+# 频率：每12小时一次（每日06:00和18:00，北京时间）
+# ★ ★ ★ 2026-08-29 修改：采集频率从每周一次提升至每日两次 ★ ★ ★
 
 name: Historical Data Collection
 
 on:
   schedule:
-    - cron: '0 6,18 * * *'   # 每天 06:00 和 18:00
+    - cron: '0 6,18 * * *'        # 每天 06:00 和 18:00（北京时间）
   workflow_dispatch:
     inputs:
       years:
