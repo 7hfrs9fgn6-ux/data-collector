@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-历史数据采集模块（修复版 V1.5）
-版本： 1.5
-更新日期： 2026-08-22
+历史数据采集模块（修复版 V2.0）
+版本： 2.0
+更新日期： 2026-08-29
 职责： 采集几十年历史行情、宏观、事件数据，统一打包签名
 
 ★ 采集内容：
@@ -11,6 +11,13 @@
   2. 历史宏观数据 - GDP、CPI、PMI
   3. 历史事件数据 - 重大政策、经济事件
   4. 历史板块数据 - 申万一级行业历史表现
+
+★ V2.0 修复（2026-08-29）：
+  - 板块数据采集：增加超时控制（防止单接口卡死）
+  - 板块数据采集：增加重试机制（每个接口最多重试 2 次）
+  - 板块数据采集：增加详细的错误日志
+  - 板块数据采集：单个板块失败不影响其他板块
+  - main 函数：增加 try/except 包裹，防止单数据类型失败导致整体崩溃
 
 ★ V1.5 修复（2026-08-22）：
   - 宏观数据：全面增强列名智能匹配，支持更多字段变体
@@ -39,6 +46,7 @@ import logging
 import time
 import hmac
 import hashlib
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 
@@ -597,13 +605,18 @@ def fetch_historical_events(years: int = 30) -> Dict[str, Any]:
 
 
 # ============================================================
-# 4. 历史板块数据（V1.4 修复日期列检测）
+# 4. 历史板块数据（V2.0 增强版 - 高稳定性）
 # ============================================================
 
-def fetch_historical_sector(years: int = 20) -> Dict[str, Any]:
+def fetch_historical_sector(years: int = 20, max_retries: int = 2) -> Dict[str, Any]:
     """
-    采集历史板块数据
-    ★ V1.4 修复：日期列匹配增加 '日期' 支持
+    采集历史板块数据（增强版 V2.0）
+    ★ V2.0 增强（2026-08-29）：
+       - 使用 threading 实现超时控制，防止单个接口卡死
+       - 增加重试机制（每个接口最多重试 2 次）
+       - 增加详细的错误日志，便于定位问题
+       - 单个板块失败不影响其他板块
+       - 如果板块全部失败，返回空数据（不阻塞整体打包）
     """
     logger.info(f"📊 开始采集历史板块数据 (回溯 {years} 年)")
 
@@ -645,84 +658,159 @@ def fetch_historical_sector(years: int = 20) -> Dict[str, Any]:
         "石油石化": "801960"
     }
 
-    # 主用 stock_zh_index_hist 的 symbol 列表
-    sw_symbols = sector_codes
+    # ★ V2.0：使用 threading 实现超时控制
+    def _call_with_timeout(func, timeout: int = 15) -> Any:
+        """在超时时间内执行函数"""
+        result = [None]
+        exception = [None]
 
-    for sector, symbol in sw_symbols.items():
-        try:
-            logger.info(f"   采集 {sector} 历史数据 ({symbol})...")
-            df = None
-
-            # ★ 方法1：尝试 stock_zh_index_hist（推荐）
+        def target():
             try:
-                df = ak.stock_zh_index_hist(symbol=symbol, period="daily", start_date="1990-01-01")
-                if df is not None and not df.empty:
-                    logger.debug(f"   ✅ {sector}: 使用 stock_zh_index_hist 成功")
+                result[0] = func()
             except Exception as e:
-                logger.debug(f"   stock_zh_index_hist 失败: {e}")
+                exception[0] = e
 
-            # ★ 方法2：尝试 index_hist_sw（备选）
-            if df is None or df.empty:
+        thread = threading.Thread(target=target)
+        thread.daemon = True
+        thread.start()
+        thread.join(timeout)
+
+        if thread.is_alive():
+            logger.debug(f"      ⏰ 超时 ({timeout}s)")
+            return None
+
+        if exception[0] is not None:
+            logger.debug(f"      ❌ 异常: {str(exception[0])[:80]}")
+            return None
+
+        return result[0]
+
+    success_count = 0
+    fail_count = 0
+    fail_details = []
+
+    for sector, symbol in sector_codes.items():
+        logger.info(f"   采集 {sector} 历史数据 ({symbol})...")
+        start_time_sector = time.time()
+        df = None
+        error_messages = []
+
+        # ★ V2.0：按稳定性排序的接口尝试列表
+        api_attempts = [
+            {
+                "name": "stock_zh_index_hist",
+                "func": lambda s=symbol: ak.stock_zh_index_hist(
+                    symbol=s,
+                    period="daily",
+                    start_date=(datetime.now() - timedelta(days=years * 365)).strftime("%Y-%m-%d")
+                ),
+                "timeout": 15
+            },
+            {
+                "name": "index_hist_sw",
+                "func": lambda s=symbol: ak.index_hist_sw(symbol=s),
+                "timeout": 10
+            }
+        ]
+
+        for attempt in api_attempts:
+            if df is not None and not df.empty:
+                break
+
+            for retry in range(max_retries + 1):
+                if df is not None and not df.empty:
+                    break
+
                 try:
-                    df = ak.index_hist_sw(symbol=symbol)
-                    if df is not None and not df.empty:
-                        logger.debug(f"   ✅ {sector}: 使用 index_hist_sw 成功")
-                except Exception as e:
-                    logger.debug(f"   index_hist_sw 失败: {e}")
+                    logger.debug(f"      [{sector}] 尝试 {attempt['name']} (重试 {retry}/{max_retries})")
+                    result_data = _call_with_timeout(attempt["func"], attempt["timeout"])
 
-            if df is None or df.empty:
-                logger.warning(f"   ⚠️ {sector}: 所有接口均无数据")
-                continue
-
-            # 智能检测列名（增加 '日期' 支持）
-            date_col = None
-            close_col = None
-            for col in df.columns:
-                col_lower = col.lower()
-                if 'date' in col_lower or '时间' in col or '日期' in col or 'day' in col_lower:
-                    date_col = col
-                if 'close' in col_lower or '收盘' in col or 'price' in col_lower:
-                    close_col = col
-
-            if date_col is None:
-                logger.warning(f"   ⚠️ {sector}: 未找到日期列，列名: {list(df.columns)[:5]}")
-                continue
-
-            data = []
-            for _, row in df.iterrows():
-                try:
-                    date_val = row.get(date_col)
-                    if date_val is None:
-                        continue
-                    if hasattr(date_val, 'strftime'):
-                        date_str = date_val.strftime("%Y-%m-%d")
+                    if result_data is not None and not result_data.empty:
+                        df = result_data
+                        logger.debug(f"      ✅ {sector}: {attempt['name']} 成功")
+                        break
                     else:
-                        date_str = str(date_val)[:10]
+                        msg = f"{attempt['name']} 返回空数据"
+                        logger.debug(f"      ⚠️ {sector}: {msg}")
+                        error_messages.append(msg)
 
-                    close_price = 0
-                    if close_col:
-                        close_price = float(row.get(close_col, 0))
+                except Exception as e:
+                    msg = f"{attempt['name']}: {str(e)[:80]}"
+                    logger.debug(f"      ❌ {sector}: {msg}")
+                    error_messages.append(msg)
+                    time.sleep(1)  # 重试前等待
 
-                    if close_price > 0:
-                        data.append({"date": date_str, "close": close_price})
-                except (ValueError, TypeError, AttributeError):
+        if df is None or df.empty:
+            elapsed = time.time() - start_time_sector
+            logger.warning(f"   ⚠️ {sector}: 所有接口均无数据 (耗时 {elapsed:.1f}s)")
+            fail_count += 1
+            fail_details.append(f"{sector}: {', '.join(error_messages[-3:])}")
+            continue
+
+        # ★ 智能检测列名
+        date_col = None
+        close_col = None
+        for col in df.columns:
+            col_lower = col.lower()
+            if 'date' in col_lower or '时间' in col or '日期' in col or 'day' in col_lower:
+                date_col = col
+            if 'close' in col_lower or '收盘' in col or 'price' in col_lower:
+                close_col = col
+
+        if date_col is None:
+            logger.warning(f"   ⚠️ {sector}: 未找到日期列，列名: {list(df.columns)[:5]}")
+            fail_count += 1
+            continue
+
+        # ★ 解析数据
+        sector_data = []
+        for _, row in df.iterrows():
+            try:
+                date_val = row.get(date_col)
+                if date_val is None:
                     continue
+                if hasattr(date_val, 'strftime'):
+                    date_str = date_val.strftime("%Y-%m-%d")
+                else:
+                    date_str = str(date_val)[:10]
 
-            if years > 0 and data:
-                cutoff_date = datetime.now() - timedelta(days=years * 365)
-                cutoff_str = cutoff_date.strftime("%Y-%m-%d")
-                data = [d for d in data if d.get('date', '') >= cutoff_str]
+                close_price = 0
+                if close_col:
+                    close_price = float(row.get(close_col, 0))
 
-            if data:
-                result["data"][sector] = data
-                logger.info(f"   ✅ {sector}: {len(data)} 条记录")
-            else:
-                logger.warning(f"   ⚠️ {sector}: 无有效数据")
+                if close_price > 0:
+                    sector_data.append({"date": date_str, "close": close_price})
+            except (ValueError, TypeError, AttributeError):
+                continue
 
-            time.sleep(0.3)
+        # ★ 按年份过滤
+        if years > 0 and sector_data:
+            cutoff_date = datetime.now() - timedelta(days=years * 365)
+            cutoff_str = cutoff_date.strftime("%Y-%m-%d")
+            sector_data = [d for d in sector_data if d.get('date', '') >= cutoff_str]
 
-        except Exception as e:
-            logger.warning(f"   ⚠️ {sector}: 采集失败 - {e}")
+        if sector_data:
+            result["data"][sector] = sector_data
+            elapsed = time.time() - start_time_sector
+            logger.info(f"   ✅ {sector}: {len(sector_data)} 条记录 (耗时 {elapsed:.1f}s)")
+            success_count += 1
+        else:
+            elapsed = time.time() - start_time_sector
+            logger.warning(f"   ⚠️ {sector}: 无有效数据 (耗时 {elapsed:.1f}s)")
+            fail_count += 1
+
+        # ★ V2.0：采集间隔（防止被限流）
+        time.sleep(0.5)
+
+    # ★ V2.0：最终统计
+    logger.info(f"   📊 板块采集完成: 成功 {success_count}/{len(sector_codes)} 个, 失败 {fail_count} 个")
+
+    if fail_details:
+        logger.debug(f"   📝 失败详情: {fail_details[:5]}")
+
+    # ★ V2.0：即使全部失败，也返回空数据（不阻塞整体打包）
+    if success_count == 0:
+        logger.warning("   ⚠️ 所有板块数据均采集失败，historical_package 将不包含板块数据")
 
     return result
 
@@ -814,7 +902,7 @@ def save_debug_data(data: Dict[str, Any], suffix: str):
 
 
 # ============================================================
-# 7. 主入口（传递 debug 参数）
+# 7. 主入口（V2.0 增强错误处理）
 # ============================================================
 
 def main():
@@ -832,25 +920,42 @@ def main():
     events_data = {}
     sector_data = {}
 
-    if args.type in ['market', 'all']:
-        market_data = fetch_historical_market(args.years)
-        if args.debug:
-            save_debug_data(market_data, 'market')
+    # ★ V2.0：每个采集函数独立 try/except，防止单个数据类型失败导致整体崩溃
+    try:
+        if args.type in ['market', 'all']:
+            market_data = fetch_historical_market(args.years)
+            if args.debug:
+                save_debug_data(market_data, 'market')
+    except Exception as e:
+        logger.error(f"❌ 市场数据采集失败: {e}")
+        # 即使失败，也使用空数据继续
 
-    if args.type in ['macro', 'all']:
-        macro_data = fetch_historical_macro(args.years, debug=args.debug)
-        if args.debug:
-            save_debug_data(macro_data, 'macro')
+    try:
+        if args.type in ['macro', 'all']:
+            macro_data = fetch_historical_macro(args.years, debug=args.debug)
+            if args.debug:
+                save_debug_data(macro_data, 'macro')
+    except Exception as e:
+        logger.error(f"❌ 宏观数据采集失败: {e}")
 
-    if args.type in ['events', 'all']:
-        events_data = fetch_historical_events(args.years)
-        if args.debug:
-            save_debug_data(events_data, 'events')
+    try:
+        if args.type in ['events', 'all']:
+            events_data = fetch_historical_events(args.years)
+            if args.debug:
+                save_debug_data(events_data, 'events')
+    except Exception as e:
+        logger.error(f"❌ 事件数据采集失败: {e}")
 
-    if args.type in ['sector', 'all']:
-        sector_data = fetch_historical_sector(min(args.years, 20))
-        if args.debug:
-            save_debug_data(sector_data, 'sector')
+    try:
+        if args.type in ['sector', 'all']:
+            sector_years = min(args.years, 20)
+            sector_data = fetch_historical_sector(sector_years)
+            if args.debug:
+                save_debug_data(sector_data, 'sector')
+    except Exception as e:
+        logger.error(f"❌ 板块数据采集失败: {e}")
+        logger.warning("   ⚠️ 板块数据采集失败，将生成不含板块数据的包")
+        sector_data = {}
 
     has_data = any([
         market_data.get('data'),
@@ -860,13 +965,23 @@ def main():
     ])
 
     if not has_data:
-        logger.warning("⚠️ 所有数据源均无数据，生成空包（供测试）")
+        logger.warning("⚠️ 所有数据源均无数据，生成空包")
         package = {
             "package_type": "historical_data",
             "generated_at": datetime.now().isoformat(),
             "version": "1.0",
             "contents": {},
-            "metadata": {"total_items": 0, "data_types": [], "note": "所有数据源均无数据"}
+            "metadata": {
+                "total_items": 0,
+                "data_types": [],
+                "note": "所有数据源均无数据",
+                "errors": [
+                    "市场数据: 无" if not market_data.get('data') else "正常",
+                    "宏观数据: 无" if not macro_data.get('data') else "正常",
+                    "事件数据: 无" if not events_data.get('data') else "正常",
+                    "板块数据: 无" if not sector_data.get('data') else "正常"
+                ]
+            }
         }
         key = get_signing_key()
         if key:
