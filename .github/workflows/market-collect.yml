@@ -1,14 +1,13 @@
 # data-collector 市场数据采集工作流
-# 采集：大宗商品、宏观、美股、板块回撤、汇率
-# 频率：每小时
-# ★ ★ ★ 2026-08-22 V2.0 升级：美股独立 Artifact + 21:30 采集 ★ ★ ★
+# 采集：大宗商品、板块回撤、宏观数据、汇率
+# 频率：每6小时（0,6,12,18点）
+# ★ ★ ★ 2026-09-06 修改：移除美股采集（已独立）、取消21:30批次 ★ ★ ★
 
-name: Market Data Collection
+name: 市场数据采集（大宗商品/板块/宏观/汇率）
 
 on:
   schedule:
-    - cron: '0 0,6,12,18 * * *'     # 常规采集
-    - cron: '30 21 * * *'            # ★ 21:30 美股收盘后采集
+    - cron: '0 0,6,12,18 * * *'     # 每6小时采集一次
   workflow_dispatch:
 
 permissions:
@@ -23,6 +22,7 @@ jobs:
   collect-market:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    name: 采集市场数据
 
     steps:
       - name: 检出代码
@@ -36,71 +36,58 @@ jobs:
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          pip install akshare yfinance pandas-datareader requests pyyaml feedparser beautifulsoup4 akshare-proxy-patch
+          pip install akshare yfinance pandas-datareader requests pyyaml feedparser beautifulsoup4
 
-      - name: 创建暂存区目录
+      - name: 📁 创建暂存区目录
         run: mkdir -p staging
 
-      - name: 采集大宗商品
+      - name: 🛢️ 采集大宗商品
         run: python scripts/collect_commodity.py
         continue-on-error: true
 
-      - name: 采集板块回撤
+      - name: 📊 采集板块回撤
         run: python scripts/collect_sector.py
         continue-on-error: true
 
-      - name: 采集宏观数据
+      - name: 🌐 采集宏观数据
         run: python scripts/collect_macro.py
         continue-on-error: true
 
-      - name: 采集美股指数
-        run: python scripts/collect_us_stock.py
-        continue-on-error: true
-
-      - name: 采集汇率
+      - name: 💱 采集汇率
         run: python scripts/collect_forex.py
         continue-on-error: true
 
-      - name: 数据签名
+      - name: 🔏 数据签名
         run: python scripts/sign.py
         continue-on-error: true
 
-      - name: 打印暂存区状态
+      - name: 📦 打包市场数据
+        run: python scripts/pack_market.py
+        continue-on-error: true
+
+      - name: 📋 打印暂存区状态
         run: |
           echo "📦 市场数据文件列表:"
           ls -la staging/ | grep -E "_signed" || echo "   (暂无签名文件)"
           echo ""
           echo "📊 文件统计:"
-          echo "   - 美股文件: $(ls staging/ | grep -E 'us_stock.*_signed\.json' | wc -l)"
           echo "   - 宏观文件: $(ls staging/ | grep -E 'macro.*_signed\.json' | wc -l)"
           echo "   - 板块文件: $(ls staging/ | grep -E 'sector.*_signed\.json' | wc -l)"
           echo "   - 汇率文件: $(ls staging/ | grep -E 'forex.*_signed\.json' | wc -l)"
           echo "   - 大宗商品文件: $(ls staging/ | grep -E 'commodity.*_signed\.json' | wc -l)"
 
       # ============================================================
-      # ★ 上传 Artifact 1：market-data（全部数据，向后兼容）
+      # ★ 上传市场数据包（不含美股）
       # ============================================================
-      - name: 上传 Artifact（全部市场数据）
+      - name: 📤 上传 Artifact（市场数据）
         uses: actions/upload-artifact@v4
         with:
           name: market-data
-          path: staging/*_*_signed.json
+          path: staging/market_package_*.json
           retention-days: 7
 
-      # ============================================================
-      # ★ ★ ★ 2026-08-22 新增：美股独立 Artifact ★ ★ ★
-      # 供私密库 pre 阶段直接拉取隔夜美股数据
-      # ============================================================
-      - name: 上传 Artifact（美股数据 - 独立）
-        uses: actions/upload-artifact@v4
-        with:
-          name: us-stock-data
-          path: staging/us_stock_*_signed.json
-          retention-days: 7
-
-      - name: 上传完成通知
+      - name: ✅ 采集完成
         if: success()
         run: |
           echo "✅ 市场数据采集完成"
-          echo "   📦 market-data: 全部数据"
-          echo "   📦 us-stock-data: 美股数据（独立）"
+          echo "   📦 包含: 大宗商品、板块、宏观、汇率"
