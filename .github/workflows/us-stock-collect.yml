@@ -1,0 +1,46 @@
+name: 美股指数采集
+
+on:
+  schedule:
+    # 夏令时（3月-11月）：北京时间 05:00（美股04:00收盘后）
+    # 冬令时（11月-3月）：北京时间 05:00（美股05:00收盘后）
+    # 固定05:00采集，覆盖两个时区
+    - cron: '0 21 * * 1-5'  # UTC 21:00 = 北京时间 05:00（夏令时）或06:00（冬令时）
+    # 注：用21:00 UTC是因为GitHub Actions的cron使用UTC，不直接跟随北京时间
+  workflow_dispatch:          # 支持手动触发
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 安装依赖
+        run: |
+          pip install yfinance pandas requests
+
+      - name: 采集美股指数（收盘数据）
+        run: |
+          python scripts/collect_us_stock.py
+
+      - name: 打包美股数据
+        run: |
+          python scripts/pack_us_stock.py
+
+      - name: 上传 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: us-stock-data
+          path: staging/us_stock_package_*.json
+          retention-days: 7
