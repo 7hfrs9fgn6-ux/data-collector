@@ -1,7 +1,7 @@
 # data-collector 美股收盘数据采集工作流（独立）
 # 采集：纳斯达克、标普500、道琼斯
 # 频率：每日05:00（美股已收盘，确保获取完整收盘数据）
-# ★ ★ ★ 2026-09-06 新建：美股独立工作流 ★ ★ ★
+# ★ ★ ★ 2026-09-06 升级：增加打包步骤，输出统一格式数据包 ★ ★ ★
 
 name: 美股收盘数据采集
 
@@ -36,7 +36,7 @@ jobs:
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          pip install akshare yfinance requests pyyaml
+          pip install akshare yfinance requests pyyaml pytz
 
       - name: 📁 创建暂存区目录
         run: mkdir -p staging
@@ -49,22 +49,27 @@ jobs:
         run: python scripts/sign.py
         continue-on-error: true
 
+      - name: 📦 打包美股数据（统一格式）
+        run: python scripts/pack_us_stock.py
+        continue-on-error: true
+
       - name: 📋 打印暂存区状态
         run: |
           echo "📦 美股数据文件列表:"
-          ls -la staging/ | grep -E "us_stock.*_signed\.json" || echo "   (暂无文件)"
+          ls -la staging/ | grep -E "us_stock" || echo "   (暂无文件)"
           echo ""
           echo "📊 文件统计:"
-          echo "   - 美股文件: $(ls staging/ | grep -E 'us_stock.*_signed\.json' | wc -l)"
+          echo "   - 原始签名文件: $(ls staging/ | grep -E 'us_stock_.*_signed\.json' | wc -l)"
+          echo "   - 打包文件: $(ls staging/ | grep -E 'us_stock_package_.*\.json' | wc -l)"
 
       # ============================================================
-      # ★ 上传美股独立 Artifact
+      # ★ 上传打包后的统一数据包（含 trade_date 等元数据）
       # ============================================================
-      - name: 📤 上传 Artifact（美股数据）
+      - name: 📤 上传 Artifact（美股打包数据）
         uses: actions/upload-artifact@v4
         with:
           name: us-stock-data
-          path: staging/us_stock_*_signed.json
+          path: staging/us_stock_package_*.json
           retention-days: 7
 
       - name: ✅ 采集完成
@@ -73,3 +78,4 @@ jobs:
           echo "✅ 美股收盘数据采集完成"
           echo "   📦 包含: 纳斯达克、标普500、道琼斯"
           echo "   🕐 采集时间: 05:00（美股已收盘）"
+          echo "   📅 打包文件已生成，含 trade_date 字段"
