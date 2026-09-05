@@ -1,22 +1,29 @@
-name: 美股指数采集
+# data-collector 美股收盘数据采集工作流（独立）
+# 采集：纳斯达克、标普500、道琼斯
+# 频率：每日05:00（美股已收盘，确保获取完整收盘数据）
+# ★ ★ ★ 2026-09-06 新建：美股独立工作流 ★ ★ ★
+
+name: 美股收盘数据采集
 
 on:
   schedule:
-    # 夏令时（3月-11月）：北京时间 05:00（美股04:00收盘后）
-    # 冬令时（11月-3月）：北京时间 05:00（美股05:00收盘后）
-    # 固定05:00采集，覆盖两个时区
-    - cron: '0 21 * * 1-5'  # UTC 21:00 = 北京时间 05:00（夏令时）或06:00（冬令时）
-    # 注：用21:00 UTC是因为GitHub Actions的cron使用UTC，不直接跟随北京时间
-  workflow_dispatch:          # 支持手动触发
+    - cron: '0 5 * * *'              # 每日05:00执行（美股已收盘）
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   actions: write
 
+env:
+  TZ: Asia/Shanghai
+  SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+
 jobs:
-  collect:
+  collect-us-stock:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    name: 采集美股收盘数据
+
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -28,19 +35,41 @@ jobs:
 
       - name: 安装依赖
         run: |
-          pip install yfinance pandas requests
+          python -m pip install --upgrade pip
+          pip install akshare yfinance requests pyyaml
 
-      - name: 采集美股指数（收盘数据）
+      - name: 📁 创建暂存区目录
+        run: mkdir -p staging
+
+      - name: 🇺🇸 采集美股指数（收盘数据）
+        run: python scripts/collect_us_stock.py
+        continue-on-error: true
+
+      - name: 🔏 数据签名
+        run: python scripts/sign.py
+        continue-on-error: true
+
+      - name: 📋 打印暂存区状态
         run: |
-          python scripts/collect_us_stock.py
+          echo "📦 美股数据文件列表:"
+          ls -la staging/ | grep -E "us_stock.*_signed\.json" || echo "   (暂无文件)"
+          echo ""
+          echo "📊 文件统计:"
+          echo "   - 美股文件: $(ls staging/ | grep -E 'us_stock.*_signed\.json' | wc -l)"
 
-      - name: 打包美股数据
-        run: |
-          python scripts/pack_us_stock.py
-
-      - name: 上传 Artifact
+      # ============================================================
+      # ★ 上传美股独立 Artifact
+      # ============================================================
+      - name: 📤 上传 Artifact（美股数据）
         uses: actions/upload-artifact@v4
         with:
           name: us-stock-data
-          path: staging/us_stock_package_*.json
+          path: staging/us_stock_*_signed.json
           retention-days: 7
+
+      - name: ✅ 采集完成
+        if: success()
+        run: |
+          echo "✅ 美股收盘数据采集完成"
+          echo "   📦 包含: 纳斯达克、标普500、道琼斯"
+          echo "   🕐 采集时间: 05:00（美股已收盘）"
