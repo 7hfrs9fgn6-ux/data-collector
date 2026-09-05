@@ -3,6 +3,7 @@
 """
 data-collector 新闻打包脚本
 将筛选后的新闻打包成标准JSON格式，并添加HMAC-SHA256签名
+★ 2026-09-06 升级：统一数据包格式（加北京时间 + trade_date + is_trading_day + dst_active）
 """
 
 import os
@@ -12,12 +13,35 @@ import glob
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
 import logging
+import pytz
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def get_beijing_time():
+    """获取北京时间（带时区）"""
+    beijing_tz = pytz.timezone('Asia/Shanghai')
+    return datetime.now(beijing_tz)
+
+
+def get_trade_date(beijing_time):
+    """获取交易日日期（北京时间日期）"""
+    return beijing_time.strftime("%Y-%m-%d")
+
+
+def is_trading_day(beijing_time):
+    """判断是否为交易日（根据星期）"""
+    weekday = beijing_time.weekday()
+    return weekday < 5
+
+
+def is_dst_active(beijing_time):
+    """判断当前是否处于夏令时（中国没有夏令时，固定返回False）"""
+    return False
 
 
 def load_config() -> Dict[str, Any]:
@@ -45,9 +69,8 @@ def get_signing_key() -> str:
 def sign_package(data: dict, key: str) -> str:
     """
     对数据包进行HMAC-SHA256签名
-    使用 utils.sign_data 保持一致性
+    使用与私密库一致的序列化方式
     """
-    # 排除 signature 字段本身
     sign_data = {k: v for k, v in data.items() if k != 'signature'}
     import json
     import hmac
@@ -65,6 +88,12 @@ def pack_news(articles: List[Dict[str, Any]], config: Dict[str, Any] = None) -> 
     """打包新闻数据，自动添加签名"""
     config = config or {}
 
+    # 获取北京时间
+    beijing_time = get_beijing_time()
+    trade_date = get_trade_date(beijing_time)
+    is_trading = is_trading_day(beijing_time)
+    dst_active = is_dst_active(beijing_time)
+
     # 应用条数限制
     max_items = config.get('collect', {}).get('news', {}).get('max_total_items', 80)
     if len(articles) > max_items:
@@ -77,24 +106,29 @@ def pack_news(articles: List[Dict[str, Any]], config: Dict[str, Any] = None) -> 
         source = article.get('source', '未知')
         source_stats[source] = source_stats.get(source, 0) + 1
 
-    # 生成打包数据
+    # 生成打包数据（统一格式）
     package = {
-        'book': 'data-collector',
-        'chapter': 'news_aggregation',
-        'version': '3.0',
-        'generated_at': datetime.now().isoformat(),
-        'period': {
-            'start': (datetime.now() - timedelta(hours=1)).isoformat(),
-            'end': datetime.now().isoformat()
+        # 统一字段（所有数据包一致）
+        "book": "公开数据",
+        "chapter": "news_aggregation",
+        "version": "2.0",
+        "generated_at": beijing_time.isoformat(),
+        "trade_date": trade_date,
+        "is_trading_day": is_trading,
+        "dst_active": dst_active,
+        # 新闻特有字段
+        "period": {
+            "start": (beijing_time - timedelta(hours=1)).isoformat(),
+            "end": beijing_time.isoformat()
         },
-        'content': {
-            'total': len(articles),
-            'items': articles
+        "content": {
+            "total": len(articles),
+            "items": articles
         },
-        'metadata': {
-            'sources': list(source_stats.keys()),
-            'source_stats': source_stats,
-            'quality_score': min(1.0, len(articles) / 50)
+        "metadata": {
+            "sources": list(source_stats.keys()),
+            "source_stats": source_stats,
+            "quality_score": min(1.0, len(articles) / 50)
         }
     }
 
@@ -105,7 +139,7 @@ def pack_news(articles: List[Dict[str, Any]], config: Dict[str, Any] = None) -> 
     # 添加签名元数据
     package['signature_metadata'] = {
         'algorithm': 'HMAC-SHA256',
-        'timestamp': datetime.now().isoformat()
+        'timestamp': beijing_time.isoformat()
     }
 
     return package
@@ -149,7 +183,8 @@ def main():
     logger.info(f"🔐 签名: {signature[:16] if signature else '无'}...")
 
     # 保存打包文件
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    beijing_time = get_beijing_time()
+    timestamp = beijing_time.strftime("%Y%m%d_%H%M%S")
     output_file = os.path.join(staging_dir, f"news_package_{timestamp}.json")
 
     with open(output_file, 'w', encoding='utf-8') as f:
@@ -157,6 +192,7 @@ def main():
 
     logger.info(f"💾 保存打包文件: {output_file}")
     logger.info(f"📊 打包统计: {len(articles)} 条, 来源 {len(package['metadata']['sources'])} 个")
+    logger.info(f"📅 交易日: {package.get('trade_date')}, 是否交易日: {package.get('is_trading_day')}")
     logger.info("=" * 50)
     logger.info("✅ 打包完成")
     logger.info("=" * 50)
