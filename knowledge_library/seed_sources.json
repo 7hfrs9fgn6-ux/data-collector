@@ -1,32 +1,26 @@
 {
-  "version": "1.0",
-  "description": "书籍知识库书单源配置",
+  "version": "2.0",
+  "description": "书籍知识库书单源配置（扩展版 V2）",
+  "last_updated": "2026-09-06",
+  "total_sources": 15,
   "sources": [
     {
       "id": "wikipedia_business_books",
-      "name": "维基百科-商业书籍列表",
-      "url": "https://en.wikipedia.org/wiki/List_of_business_books",
-      "type": "wikipedia_list",
+      "name": "维基百科-商业书籍",
+      "url": "https://en.wikipedia.org/wiki/Category:Business_books",
+      "type": "wikipedia_category",
       "language": "en",
       "enabled": true,
-      "category_whitelist": ["business", "finance", "economics", "management", "investing"]
+      "expected_count": 80
     },
     {
-      "id": "wikipedia_finance_category",
-      "name": "维基百科-金融书籍分类",
+      "id": "wikipedia_finance_books",
+      "name": "维基百科-金融书籍",
       "url": "https://en.wikipedia.org/wiki/Category:Finance_books",
       "type": "wikipedia_category",
       "language": "en",
       "enabled": true,
-      "category_whitelist": ["finance", "investing", "economics"]
-    },
-    {
-      "id": "wikipedia_investment_books",
-      "name": "维基百科-投资书籍",
-      "url": "https://en.wikipedia.org/wiki/Category:Investment_books",
-      "type": "wikipedia_category",
-      "language": "en",
-      "enabled": true
+      "expected_count": 42
     },
     {
       "id": "wikipedia_economics_books",
@@ -34,7 +28,8 @@
       "url": "https://en.wikipedia.org/wiki/Category:Economics_books",
       "type": "wikipedia_category",
       "language": "en",
-      "enabled": true
+      "enabled": true,
+      "expected_count": 103
     },
     {
       "id": "wikipedia_behavioral_finance",
@@ -42,23 +37,107 @@
       "url": "https://en.wikipedia.org/wiki/Category:Behavioral_finance",
       "type": "wikipedia_category",
       "language": "en",
-      "enabled": true
+      "enabled": true,
+      "expected_count": 70
     },
     {
-      "id": "wikipedia_investment_zh",
-      "name": "维基百科-投资学著作",
-      "url": "https://zh.wikipedia.org/wiki/Category:投资学著作",
+      "id": "wikipedia_financial_economics",
+      "name": "维基百科-金融经济学",
+      "url": "https://en.wikipedia.org/wiki/Category:Financial_economics",
       "type": "wikipedia_category",
-      "language": "zh",
-      "enabled": true
+      "language": "en",
+      "enabled": true,
+      "expected_count": 50
     },
     {
-      "id": "wikipedia_economics_zh",
-      "name": "维基百科-经济学著作",
-      "url": "https://zh.wikipedia.org/wiki/Category:经济学著作",
+      "id": "wikipedia_corporate_finance",
+      "name": "维基百科-公司金融",
+      "url": "https://en.wikipedia.org/wiki/Category:Corporate_finance",
       "type": "wikipedia_category",
-      "language": "zh",
-      "enabled": true
+      "language": "en",
+      "enabled": true,
+      "expected_count": 40
+    },
+    {
+      "id": "wikipedia_personal_finance",
+      "name": "维基百科-个人理财",
+      "url": "https://en.wikipedia.org/wiki/Category:Personal_finance",
+      "type": "wikipedia_category",
+      "language": "en",
+      "enabled": true,
+      "expected_count": 35
+    },
+    {
+      "id": "wikipedia_economic_history",
+      "name": "维基百科-经济史",
+      "url": "https://en.wikipedia.org/wiki/Category:Economic_history",
+      "type": "wikipedia_category",
+      "language": "en",
+      "enabled": true,
+      "expected_count": 45
+    },
+    {
+      "id": "wikipedia_investment_management",
+      "name": "维基百科-投资管理",
+      "url": "https://en.wikipedia.org/wiki/Category:Investment_management",
+      "type": "wikipedia_category",
+      "language": "en",
+      "enabled": true,
+      "expected_count": 30
+    },
+    {
+      "id": "wikipedia_decision_theory",
+      "name": "维基百科-决策理论",
+      "url": "https://en.wikipedia.org/wiki/Category:Decision_theory",
+      "type": "wikipedia_category",
+      "language": "en",
+      "enabled": true,
+      "expected_count": 35
+    },
+    {
+      "id": "wikipedia_risk_management",
+      "name": "维基百科-风险管理",
+      "url": "https://en.wikipedia.org/wiki/Category:Risk_management",
+      "type": "wikipedia_category",
+      "language": "en",
+      "enabled": true,
+      "expected_count": 30
+    },
+    {
+      "id": "wikipedia_financial_markets",
+      "name": "维基百科-金融市场",
+      "url": "https://en.wikipedia.org/wiki/Category:Financial_markets",
+      "type": "wikipedia_category",
+      "language": "en",
+      "enabled": true,
+      "expected_count": 35
+    },
+    {
+      "id": "wikipedia_management_books",
+      "name": "维基百科-管理学书籍",
+      "url": "https://en.wikipedia.org/wiki/Category:Management_books",
+      "type": "wikipedia_category",
+      "language": "en",
+      "enabled": true,
+      "expected_count": 60
+    },
+    {
+      "id": "wikipedia_behavioral_economics",
+      "name": "维基百科-行为经济学",
+      "url": "https://en.wikipedia.org/wiki/Category:Behavioral_economics",
+      "type": "wikipedia_category",
+      "language": "en",
+      "enabled": true,
+      "expected_count": 45
+    },
+    {
+      "id": "wikipedia_accounting",
+      "name": "维基百科-会计学",
+      "url": "https://en.wikipedia.org/wiki/Category:Accounting",
+      "type": "wikipedia_category",
+      "language": "en",
+      "enabled": true,
+      "expected_count": 30
     }
   ],
   "allowed_categories": [
@@ -78,7 +157,14 @@
     "cognitive_science",
     "psychology",
     "decision_theory",
-    "mental_models"
+    "mental_models",
+    "corporate_finance",
+    "personal_finance",
+    "economic_history",
+    "business_history",
+    "accounting",
+    "financial_economics",
+    "investment_management"
   ],
   "excluded_keywords": [
     "fiction",
@@ -88,12 +174,18 @@
     "cookbook",
     "self-help",
     "spirituality",
-    "religion"
+    "religion",
+    "science fiction",
+    "fantasy",
+    "mystery",
+    "thriller",
+    "romance",
+    "horror"
   ],
   "batch_config": {
     "books_per_batch": 10,
-    "delay_between_batches": 5,
-    "max_books_total": 500,
+    "delay_between_batches": 3,
+    "max_books_total": 800,
     "timeout_per_book": 15
   }
 }
