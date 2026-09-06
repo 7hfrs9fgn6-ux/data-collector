@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-书籍知识库主采集程序（V5：双通道采集）
+书籍知识库主采集程序（V6：修正书籍识别）
 职责：
   1. 从种子源自动发现书籍
-  2. ★ 双通道采集：书籍（ISBN/Infobox book）+ 知识条目（理论/概念/人物/术语）
+  2. ★ 双通道采集：书籍（ISBN/Infobox book/分类/标题） + 知识条目（理论/概念/人物/术语）
   3. 分类过滤和去重
   4. 支持断点续传
   5. 输出采集报告
 
-数据源：维基百科 + 豆瓣 + 维基语录
-
-策略说明：
-  - 标题匹配金融关键词 → 进入采集流程
-  - 有 ISBN/Infobox book → 作为"书籍"采集
-  - 无 ISBN 但属于金融/经济/行为领域 → 作为"知识条目"采集
+修正记录：
+  - V6: 放宽 _is_book() 判断条件，提高书籍识别率
+  - V6: 增加最小书籍回退，避免有书名但因无 wiki_data 而丢失
 """
 
 import os
@@ -93,32 +90,79 @@ class BookCollector:
         save_json(checkpoint, CHECKPOINT_FILE)
         logger.debug(f"   💾 断点已保存: {checkpoint['total_processed']} 个已处理")
 
-    def _is_book(self, wiki_data: Dict) -> bool:
+    # ============================================================
+    # ★ 核心修正：放宽书籍判断条件
+    # ============================================================
+    def _is_book(self, wiki_data: Dict, title: str = '') -> bool:
         """
-        判断维基百科条目是否为一本书
-        判断依据：有 ISBN 或 Infobox book
+        判断维基百科条目是否为一本书（V6 放宽版）
+        判断依据（满足任一即可）：
+          1. 有 ISBN
+          2. 有 Infobox book
+          3. 分类中包含明显的书籍关键词
+          4. 标题中包含 "book" 或书籍后缀
+          5. 分类为金融/经济/商业类，且不属于明显的概念/理论/人物/术语
         """
-        if not wiki_data:
-            return False
-
-        # 检查 ISBN
-        if wiki_data.get('isbn'):
+        # 1. 如果有 wiki_data 且包含 ISBN → 书
+        if wiki_data and wiki_data.get('isbn'):
             return True
 
-        # 检查是否有书籍信息框
-        infobox = wiki_data.get('infobox', '')
-        if infobox and 'Infobox book' in str(infobox):
-            return True
-
-        # 检查分类中是否包含 "books"
-        categories = wiki_data.get('categories', [])
-        for cat in categories:
-            cat_lower = cat.lower()
-            if 'book' in cat_lower or 'novel' in cat_lower:
+        # 2. 如果有 wiki_data 且包含 Infobox book → 书
+        if wiki_data:
+            infobox = wiki_data.get('infobox', '')
+            if infobox and 'Infobox book' in str(infobox):
                 return True
 
+        # 3. 分类判断
+        categories = []
+        if wiki_data:
+            categories = wiki_data.get('categories', [])
+        cat_text = ' '.join(categories).lower()
+
+        # ★ 强书籍分类关键词
+        book_categories = [
+            'book', 'books', 'novel', 'novels', 'business book',
+            'finance book', 'economics book', 'personal finance',
+            'investment book', 'financial literature', 'business literature',
+            'non-fiction book', 'nonfiction book', 'biography',
+            'autobiography', 'memoir', 'self-help book'
+        ]
+        for keyword in book_categories:
+            if keyword in cat_text:
+                return True
+
+        # 4. ★ 标题中包含 "book" 或明确后缀
+        title_lower = title.lower()
+        if 'book' in title_lower:
+            return True
+        if any(suffix in title_lower for suffix in ['(book)', '(memoir)', '(biography)']):
+            return True
+
+        # 5. ★ 对于无明确书籍标记，但属于金融/经济/商业领域，且不是明显概念/理论/人物/术语的条目，默认为书
+        finance_keywords = ['finance', 'economics', 'business', 'investing', 'management']
+        concept_keywords = [
+            'theory', 'concept', 'people', 'term', 'bias', 'effect',
+            'model', 'hypothesis', 'paradox', 'anomaly', 'illusion',
+            'fallacy', 'heuristic', 'index', 'definition', 'glossary'
+        ]
+
+        has_finance = any(k in cat_text for k in finance_keywords)
+        has_concept = any(k in cat_text for k in concept_keywords)
+
+        if has_finance and not has_concept:
+            return True
+
+        # 如果标题包含典型的经济学/商业词汇，但没有概念词汇，也视为书
+        title_finance = any(k in title_lower for k in ['econom', 'finance', 'invest', 'market', 'trade', 'business'])
+        if title_finance and not has_concept:
+            return True
+
+        # 默认不是书
         return False
 
+    # ============================================================
+    # 构建结果
+    # ============================================================
     def _build_book_result(self, wiki_data: Dict, title: str, quotes: List[str] = None, douban_data: Dict = None) -> Dict:
         """构建书籍结果"""
         result = {
@@ -143,7 +187,6 @@ class BookCollector:
             "status": "active"
         }
 
-        # 补充豆瓣信息
         if douban_data:
             result["title_cn"] = douban_data.get("title_cn", result.get("title_cn", ''))
             result["authors_cn"] = douban_data.get("authors_cn", [])
@@ -155,9 +198,42 @@ class BookCollector:
 
         return result
 
+    def _build_minimal_book_result(self, title: str, quotes: List[str] = None, douban_data: Dict = None) -> Dict:
+        """构建最小书籍信息（没有维基百科数据时使用）"""
+        result = {
+            "id": f"book_{hashlib.md5(title.encode()).hexdigest()[:16]}",
+            "title": title,
+            "title_cn": "",
+            "authors": [],
+            "authors_cn": [],
+            "categories": [],
+            "description": "",
+            "description_cn": "",
+            "quotes": quotes or [],
+            "cover_url": "",
+            "url": "",
+            "publisher": "",
+            "publish_date": "",
+            "rating": 0,
+            "sources": ["wikipedia_fallback"],
+            "type": "book",
+            "collected_at": datetime.now().isoformat(),
+            "status": "active"
+        }
+
+        if douban_data:
+            result["title_cn"] = douban_data.get("title_cn", '')
+            result["authors_cn"] = douban_data.get("authors_cn", [])
+            result["description_cn"] = douban_data.get("description_cn", '')
+            result["rating"] = douban_data.get("rating", 0)
+            result["publisher"] = douban_data.get("publisher", '')
+            result["douban_id"] = douban_data.get("douban_id", '')
+            result["sources"].append("douban")
+
+        return result
+
     def _build_knowledge_entry(self, wiki_data: Dict, title: str, douban_data: Dict = None) -> Dict:
-        """构建知识条目结果（理论/概念/人物/术语等）"""
-        # 推断条目类型
+        """构建知识条目结果"""
         entry_type = self.category_filter.infer_entry_type(title, wiki_data)
 
         result = {
@@ -177,7 +253,6 @@ class BookCollector:
             "status": "active"
         }
 
-        # 补充豆瓣信息
         if douban_data:
             result["title_cn"] = douban_data.get("title_cn", result.get("title_cn", ''))
             result["description_cn"] = douban_data.get("description_cn", '')
@@ -185,14 +260,17 @@ class BookCollector:
 
         return result
 
+    # ============================================================
+    # ★ 核心采集逻辑（调整判断顺序）
+    # ============================================================
     def _collect_single_item(self, candidate: Dict) -> Optional[Dict]:
         """
-        采集单个条目（双通道）
-        ★ 逻辑：
+        采集单个条目（双通道，V6 修正）
+        逻辑：
           1. 标题匹配金融关键词 → 继续
           2. 尝试维基百科 API
-          3. 判断是否为"书籍" → 走书籍通道
-          4. 否则 → 走知识条目通道
+          3. 判断是否为"书籍"（放宽条件）→ 走书籍通道
+          4. 否则走知识条目通道
         """
         title = candidate.get('title', '')
         url = candidate.get('url', '')
@@ -214,35 +292,46 @@ class BookCollector:
                 logger.debug(f"      维基百科重试 {retry+1}: {e}")
                 time.sleep(1)
 
-        # ★ 3. 获取维基语录（如果是书籍）
+        # ★ 3. 判断类型（放宽条件）
+        is_book = self._is_book(wiki_data, title)
+
+        # 获取维基语录（仅书籍）
         quotes = []
-        if wiki_data and self._is_book(wiki_data):
+        if is_book:
             quotes = get_quotes_for_book(title)
             if quotes:
                 logger.debug(f"      ✅ 维基语录: {len(quotes)} 条")
 
-        # ★ 4. 获取豆瓣信息
+        # 获取豆瓣信息
         douban_data = get_douban_info(title)
 
-        # ★ 5. 判断类型并构建结果
-        if wiki_data and self._is_book(wiki_data):
-            # 书籍通道
-            result = self._build_book_result(wiki_data, title, quotes, douban_data)
+        # ★ 4. 构建结果
+        if is_book:
+            # 如果有 wiki_data 则用完整数据，否则用最小回退
+            if wiki_data:
+                result = self._build_book_result(wiki_data, title, quotes, douban_data)
+            else:
+                result = self._build_minimal_book_result(title, quotes, douban_data)
             logger.debug(f"      📚 书籍: {result.get('title')}")
             return result
-        elif self.category_filter.is_finance_title(title):
-            # 知识条目通道（即使没有 wiki_data 也保留基础信息）
-            result = self._build_knowledge_entry(wiki_data, title, douban_data)
-            logger.debug(f"      🧠 知识条目 [{result.get('type')}]: {result.get('title')}")
-            return result
+        else:
+            # 知识条目通道（只保留有 wiki_data 的，否则丢弃）
+            if wiki_data:
+                result = self._build_knowledge_entry(wiki_data, title, douban_data)
+                logger.debug(f"      🧠 知识条目 [{result.get('type')}]: {result.get('title')}")
+                return result
+            else:
+                # 没有 wiki_data 且不是书籍，无法采集
+                logger.debug(f"      ⛔ 无数据且非书籍: {title}")
+                return None
 
-        # 都不匹配
-        return None
-
+    # ============================================================
+    # 主流程
+    # ============================================================
     def collect(self) -> Dict[str, Any]:
         """执行采集"""
         logger.info("=" * 60)
-        logger.info("📚 书籍/知识库采集启动（双通道）")
+        logger.info("📚 书籍/知识库采集启动（双通道 V6）")
         logger.info("=" * 60)
 
         # 1. 加载种子源配置
@@ -269,12 +358,8 @@ class BookCollector:
         # 4. 采集条目详情
         logger.info("📖 阶段 3: 采集条目详情（双通道）...")
 
-        # 限制采集数量
         max_to_collect = min(self.max_items, len(candidates))
         candidates_to_process = candidates[:max_to_collect]
-
-        new_books = []
-        new_entries = []
 
         for idx, candidate in enumerate(candidates_to_process):
             title = candidate.get('title', '')
@@ -286,35 +371,30 @@ class BookCollector:
 
             logger.info(f"   📖 [{idx+1}/{max_to_collect}] 采集: {title}")
 
-            # 采集条目
             item_data = self._collect_single_item(candidate)
 
             if item_data:
                 item_type = item_data.get('type', 'unknown')
 
                 if item_type == 'book':
-                    # 检查书籍重复
                     is_dup, reason = book_deduper.is_duplicate(item_data)
                     if is_dup:
                         logger.info(f"      ⏭️ 重复书籍: {title} ({reason})")
                         continue
 
-                    new_books.append(item_data)
-                    book_deduper.add_to_index(item_data)
                     self.collected_books.append(item_data)
+                    book_deduper.add_to_index(item_data)
                     self._save_book_detail(item_data)
                     logger.info(f"      ✅ 书籍采集成功: {item_data.get('title')}")
 
                 else:
-                    # 知识条目
                     is_dup, reason = entry_deduper.is_duplicate(item_data)
                     if is_dup:
                         logger.info(f"      ⏭️ 重复知识条目: {title} ({reason})")
                         continue
 
-                    new_entries.append(item_data)
-                    entry_deduper.add_to_index(item_data)
                     self.collected_entries.append(item_data)
+                    entry_deduper.add_to_index(item_data)
                     self._save_entry_detail(item_data)
                     logger.info(f"      🧠 知识条目采集成功: [{item_data.get('type')}] {item_data.get('title')}")
 
@@ -326,7 +406,7 @@ class BookCollector:
             if idx % 5 == 0:
                 self._save_checkpoint()
 
-            # 延迟（避免请求过快）
+            # 延迟
             time.sleep(1.5)
 
         # 5. 保存索引
@@ -345,21 +425,18 @@ class BookCollector:
         return package
 
     def _save_book_detail(self, book: Dict):
-        """保存书籍详情"""
         book_id = book.get('id', '')
         if book_id:
             filepath = os.path.join(BOOK_DETAILS_DIR, f"{book_id}.json")
             save_json(book, filepath)
 
     def _save_entry_detail(self, entry: Dict):
-        """保存知识条目详情"""
         entry_id = entry.get('id', '')
         if entry_id:
             filepath = os.path.join(ENTRY_DETAILS_DIR, f"{entry_id}.json")
             save_json(entry, filepath)
 
     def _generate_report(self) -> Dict:
-        """生成采集报告"""
         return {
             "books_collected": len(self.collected_books),
             "entries_collected": len(self.collected_entries),
@@ -378,7 +455,6 @@ class BookCollector:
         }
 
     def _build_package(self, report: Dict) -> Dict:
-        """构建数据包"""
         now = datetime.now()
         trade_date = now.strftime("%Y-%m-%d")
 
@@ -413,7 +489,7 @@ class BookCollector:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='书籍/知识库采集（双通道）')
+    parser = argparse.ArgumentParser(description='书籍/知识库采集（双通道 V6）')
     parser.add_argument('--max', type=int, default=300, help='最大采集数量')
     parser.add_argument('--debug', action='store_true', help='调试模式')
     args = parser.parse_args()
