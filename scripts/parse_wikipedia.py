@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-维基百科解析器（修正版）
+维基百科解析器（V3：HTML优先 + API降级）
 职责：
-  1. 通过 MediaWiki API 提取书籍列表（替代 HTML 抓取）
-  2. 获取每本书的详情
-  3. 返回标准化的书籍数据
-★ 2026-09-06 修正：优先使用 MediaWiki API，避免 403 反爬
+  1. 网页抓取分类页面获取书籍列表（主方式）
+  2. API 作为降级备用
+  3. 获取每本书的详情
+  4. 返回标准化的书籍数据
+★ 2026-09-06 修正：HTML抓取优先，避免API限流
 """
 
 import re
@@ -20,62 +21,145 @@ logger = logging.getLogger(__name__)
 
 
 class WikipediaParser:
-    """维基百科解析器（API 优先）"""
+    """维基百科解析器（HTML优先 + API降级）"""
 
     def __init__(self, lang: str = "en"):
         self.lang = lang
         self.api_url = f"https://{lang}.wikipedia.org/w/api.php"
         self.base_url = f"https://{lang}.wikipedia.org/wiki/"
 
-    def extract_books_from_seed_url(self, url: str) -> List[Dict]:
-        """
-        从种子 URL 提取书籍列表
-        ★ 优先使用 MediaWiki API
-        ★ 仅在 API 失败时降级到 HTML 抓取
-        """
-        books = []
+    # ============================================================
+    # ★ 主入口：获取分类下的书籍列表（HTML优先）
+    # ============================================================
 
-        # 判断 URL 类型
-        if '/wiki/Category:' in url:
-            # 分类页面 → 使用 API
-            category = url.split('/wiki/Category:')[-1]
-            # 处理 URL 编码
-            category = unquote(category)
-            books = self.get_books_from_category_api(category)
-        elif '/wiki/List_of' in url:
-            # 列表页面 → 尝试 API，失败则用 HTML
-            # 列表页面无法直接用 API 获取完整列表，用 HTML 抓取
-            books = self._extract_books_from_list_html(url)
-        else:
-            # 普通页面 → 提取单个条目
-            title = url.split('/wiki/')[-1]
-            title = unquote(title).replace('_', ' ')
-            if title:
-                books = [{"title": title, "url": url}]
-
-        logger.info(f"   📚 从 {url} 提取 {len(books)} 本书")
-        return books
-
-    def get_books_from_category_api(self, category: str, max_books: int = 200) -> List[Dict]:
+    def get_books_from_category(self, category: str, max_books: int = 300) -> List[Dict]:
         """
-        ★ MediaWiki API 获取分类下的书籍列表（推荐方式）
+        获取分类下的书籍列表
+        ★ HTML优先（获取完整列表），API作为降级
+        """
+        # 1. 尝试 HTML 抓取（主方式）
+        books = self._get_books_from_category_html(category)
+        if books:
+            logger.info(f"   ✅ HTML 获取分类 '{category}' 成功: {len(books)} 本书")
+            return books[:max_books]
+
+        # 2. HTML 失败 → 降级到 API
+        logger.debug(f"   ⚠️ HTML 获取分类 '{category}' 失败，降级到 API...")
+        time.sleep(1)  # 降级前等待
+        books = self._get_books_from_category_api(category, max_books)
+        if books:
+            logger.info(f"   ✅ API 获取分类 '{category}' 成功: {len(books)} 本书")
+            return books
+
+        logger.warning(f"   ⚠️ 分类 '{category}' 所有方式均失败")
+        return []
+
+    # ============================================================
+    # ★ HTML 抓取分类页面（主方式）
+    # ============================================================
+
+    def _get_books_from_category_html(self, category: str) -> List[Dict]:
+        """
+        从 HTML 页面解析分类下的书籍列表
+        """
+        try:
+            import requests
+            from bs4 import BeautifulSoup
+
+            url = f"https://{self.lang}.wikipedia.org/wiki/Category:{category.replace(' ', '_')}"
+            logger.debug(f"   🌐 HTML 请求: {url}")
+
+            response = requests.get(
+                url,
+                timeout=15,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
+            )
+
+            if response.status_code != 200:
+                logger.debug(f"   HTML 请求失败: {response.status_code}")
+                return []
+
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            books = []
+            # 分类页面中的条目在 <div class="mw-category"> 中
+            category_div = soup.find('div', {'class': 'mw-category'})
+            if not category_div:
+                # 尝试其他可能的容器
+                category_div = soup.find('div', {'id': 'mw-pages'})
+
+            if category_div:
+                # 查找所有链接
+                for link in category_div.find_all('a', href=True):
+                    href = link.get('href', '')
+                    title = link.get('title', '')
+
+                    if not href.startswith('/wiki/'):
+                        continue
+                    if ':' in href:
+                        continue
+                    if not title or len(title) < 2:
+                        continue
+                    if self._is_non_book(title):
+                        continue
+
+                    books.append({
+                        "title": title,
+                        "url": self.base_url + href.replace('/wiki/', ''),
+                        "source": "wikipedia_html"
+                    })
+
+            # 如果没有找到 mw-category，尝试查找所有带链接的条目
+            if not books:
+                # 查找所有 <li> 中的链接
+                for li in soup.find_all('li'):
+                    link = li.find('a', href=True)
+                    if link:
+                        href = link.get('href', '')
+                        title = link.get('title', '')
+                        if href.startswith('/wiki/') and not ':' in href:
+                            if title and not self._is_non_book(title):
+                                books.append({
+                                    "title": title,
+                                    "url": self.base_url + href.replace('/wiki/', ''),
+                                    "source": "wikipedia_html"
+                                })
+
+            return books
+
+        except Exception as e:
+            logger.debug(f"   HTML 抓取失败: {e}")
+            return []
+
+    # ============================================================
+    # ★ API 获取分类（降级方式）
+    # ============================================================
+
+    def _get_books_from_category_api(self, category: str, max_books: int = 200) -> List[Dict]:
+        """
+        MediaWiki API 获取分类下的书籍列表（降级方式）
         """
         try:
             import requests
 
-            # 第一次请求：获取分类成员
             params = {
                 "action": "query",
                 "format": "json",
                 "list": "categorymembers",
                 "cmtitle": f"Category:{category}",
                 "cmtype": "page",
-                "cmlimit": max_books,
+                "cmlimit": min(max_books, 200),
                 "cmnamespace": 0,
             }
 
-            response = requests.get(self.api_url, params=params, timeout=20, 
-                                    headers={"User-Agent": "VSystem-DataCollector/1.0"})
+            response = requests.get(
+                self.api_url,
+                params=params,
+                timeout=20,
+                headers={"User-Agent": "VSystem-DataCollector/1.0"}
+            )
             response.raise_for_status()
             data = response.json()
 
@@ -89,23 +173,44 @@ class WikipediaParser:
                         "source": "wikipedia_api"
                     })
 
-            logger.info(f"   ✅ API 获取分类 '{category}' 成功: {len(books)} 本书")
             return books
 
         except Exception as e:
-            logger.warning(f"   ⚠️ API 获取分类失败: {e}")
+            if '429' in str(e):
+                logger.warning(f"   ⚠️ API 限流，等待 5 秒后重试...")
+                time.sleep(5)
+                # 重试一次
+                return self._get_books_from_category_api(category, max_books)
+            logger.debug(f"   API 获取分类失败: {e}")
             return []
 
+    # ============================================================
+    # 提取书籍列表（从任意 URL）
+    # ============================================================
+
+    def extract_books_from_url(self, url: str, source_type: str = 'category') -> List[Dict]:
+        """
+        从 URL 提取书籍列表（兼容旧接口）
+        """
+        if '/wiki/Category:' in url:
+            category = url.split('/wiki/Category:')[-1]
+            category = unquote(category)
+            return self.get_books_from_category(category)
+        else:
+            # 列表页面
+            return self._extract_books_from_list_html(url)
+
     def _extract_books_from_list_html(self, url: str) -> List[Dict]:
-        """
-        从列表页面 HTML 提取书籍（仅用于列表页面）
-        """
+        """从列表页面 HTML 提取书籍"""
         try:
             import requests
             from bs4 import BeautifulSoup
 
-            response = requests.get(url, timeout=15,
-                                   headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+            response = requests.get(
+                url,
+                timeout=15,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            )
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
 
@@ -123,7 +228,6 @@ class WikipediaParser:
                 if self._is_non_book(title):
                     continue
 
-                # 检查是否在列表正文区域
                 parent = link.parent
                 in_list = False
                 while parent:
@@ -146,6 +250,10 @@ class WikipediaParser:
         except Exception as e:
             logger.warning(f"   ⚠️ HTML 列表解析失败: {e}")
             return []
+
+    # ============================================================
+    # 辅助方法
+    # ============================================================
 
     def _is_non_book(self, title: str) -> bool:
         """判断是否非书籍条目"""
@@ -188,8 +296,12 @@ class WikipediaParser:
                 "inprop": "url"
             }
 
-            response = requests.get(self.api_url, params=params, timeout=15,
-                                   headers={"User-Agent": "VSystem-DataCollector/1.0"})
+            response = requests.get(
+                self.api_url,
+                params=params,
+                timeout=15,
+                headers={"User-Agent": "VSystem-DataCollector/1.0"}
+            )
             response.raise_for_status()
             data = response.json()
 
@@ -225,42 +337,46 @@ class WikipediaParser:
             return None
 
 
+# ============================================================
+# 兼容旧接口
+# ============================================================
+
 def extract_books_from_seed_sources(seed_config: Dict) -> List[Dict]:
     """
     从种子源配置提取所有书籍
-    ★ 优先使用 API，避免 403
+    ★ 根据 type 字段选择采集方式
     """
     all_books = []
     seen_titles = set()
 
     sources = seed_config.get('sources', [])
 
-    for source in sources:
+    # ★ 分类之间的延迟
+    delay_between_sources = 3
+
+    for idx, source in enumerate(sources):
         if not source.get('enabled', True):
             continue
 
         url = source.get('url', '')
         source_id = source.get('id', '')
         source_type = source.get('type', 'wikipedia_category')
+        lang = source.get('language', 'en')
 
         logger.info(f"   📖 处理源: {source_id} (类型: {source_type})")
 
-        # 根据类型选择提取方式
-        parser = WikipediaParser('en' if source.get('language') == 'en' else 'zh')
+        parser = WikipediaParser(lang)
 
         if source_type == 'wikipedia_category':
-            # ★ 使用 API（推荐）
+            # ★ 使用 HTML 优先 + API 降级
             category = url.split('/wiki/Category:')[-1]
             category = unquote(category)
-            books = parser.get_books_from_category_api(category)
-        elif source_type == 'wikipedia_list':
-            # 列表页面 → 用 HTML 抓取（API 不支持）
-            books = parser._extract_books_from_list_html(url)
+            books = parser.get_books_from_category(category)
         else:
-            # 兜底
-            books = parser.extract_books_from_seed_url(url)
+            # 列表页面
+            books = parser.extract_books_from_url(url)
 
-        # 去重：按标题去重
+        # 去重
         for book in books:
             title = book.get('title', '')
             if title and title not in seen_titles:
@@ -268,7 +384,20 @@ def extract_books_from_seed_sources(seed_config: Dict) -> List[Dict]:
                 book['source_id'] = source_id
                 all_books.append(book)
 
-        time.sleep(1)  # 请求间隔
+        # ★ 每个分类之间延迟 3 秒
+        if idx < len(sources) - 1:
+            logger.debug(f"   ⏱️ 等待 {delay_between_sources} 秒后继续...")
+            time.sleep(delay_between_sources)
 
     logger.info(f"   📚 共发现 {len(all_books)} 本候选书籍")
     return all_books
+
+
+if __name__ == "__main__":
+    # 测试
+    logging.basicConfig(level=logging.INFO)
+    parser = WikipediaParser()
+    books = parser.get_books_from_category("Finance_books", 20)
+    print(f"发现 {len(books)} 本书:")
+    for book in books[:5]:
+        print(f"  - {book['title']}")
