@@ -9,6 +9,9 @@
   4. 支持断点续传
   5. 输出采集报告
 
+数据源：维基百科 + 豆瓣 + 维基语录
+（无 Google Books API）
+
 使用方式：
   python scripts/collect_book_knowledge.py              # 完整采集
   python scripts/collect_book_knowledge.py --debug      # 调试模式
@@ -31,10 +34,9 @@ sys.path.insert(0, PROJECT_ROOT)
 # 导入各模块
 from scripts.parse_wikipedia import WikipediaParser, extract_books_from_seed_sources
 from scripts.parse_wikiquote import get_quotes_for_book
-from scripts.parse_google_books import get_book_info_from_google
 from scripts.parse_douban import get_douban_info
-from scripts.category_filter import CategoryFilter, filter_books
-from scripts.dedup_check import DedupChecker, deduplicate_books
+from scripts.category_filter import CategoryFilter
+from scripts.dedup_check import DedupChecker
 from utils import save_json, load_json, get_timestamp
 
 logging.basicConfig(
@@ -187,6 +189,7 @@ class BookCollector:
     def _collect_single_book(self, candidate: Dict) -> Optional[Dict]:
         """
         采集单本书籍详情（多源融合）
+        ★ 数据源：维基百科 + 豆瓣 + 维基语录（无 Google Books）
         """
         title = candidate.get('title', '')
         url = candidate.get('url', '')
@@ -211,7 +214,7 @@ class BookCollector:
             "status": "active"
         }
 
-        # 1. 维基百科详情
+        # 1. 维基百科详情（主源）
         wiki_parser = WikipediaParser()
         wiki_data = wiki_parser.get_book_details(title)
 
@@ -226,38 +229,15 @@ class BookCollector:
             result["sources"].append("wikipedia")
             logger.debug(f"      ✅ 维基百科: {wiki_data.get('title')}")
 
-        # 2. 维基语录
+        # 2. 维基语录（如果维基百科有数据，尝试获取语录）
         quotes = get_quotes_for_book(title)
         if quotes:
             result["quotes"] = quotes[:20]
             result["sources"].append("wikiquote")
             logger.debug(f"      ✅ 维基语录: {len(quotes)} 条")
 
-        # 3. Google Books API
-        google_data = get_book_info_from_google(title)
-        if google_data:
-            # 补充信息（不覆盖维基百科）
-            if not result["description"] and google_data.get("description"):
-                result["description"] = google_data["description"]
-            if google_data.get("authors"):
-                result["authors"] = google_data["authors"]
-            if google_data.get("publisher"):
-                result["publisher"] = google_data["publisher"]
-            if google_data.get("publish_date"):
-                result["publish_date"] = google_data["publish_date"]
-            if google_data.get("categories"):
-                # 合并分类
-                for cat in google_data["categories"]:
-                    if cat not in result["categories"]:
-                        result["categories"].append(cat)
-            if not result["cover_url"] and google_data.get("cover_url"):
-                result["cover_url"] = google_data["cover_url"]
-            result["google_books_id"] = google_data.get("google_books_id", '')
-            result["sources"].append("google_books")
-            logger.debug(f"      ✅ Google Books: {google_data.get('title')}")
-
-        # 4. 豆瓣（中文信息）
-        # 尝试用中文标题搜索（如果有）
+        # 3. 豆瓣（中文信息）
+        # 尝试用书名搜索豆瓣
         douban_data = get_douban_info(title)
         if douban_data:
             result["title_cn"] = douban_data.get("title_cn", result.get("title_cn", ''))
@@ -277,7 +257,7 @@ class BookCollector:
         if not result["sources"]:
             return None
 
-        # 生成 ID（如果没有）
+        # 生成 ID（如果没有维基百科 ID）
         if not result.get("id"):
             import hashlib
             hash_str = f"{title}_{'|'.join(result.get('authors', []))}"
@@ -305,7 +285,6 @@ class BookCollector:
             "sources": {
                 "wikipedia": sum(1 for b in self.collected_books if 'wikipedia' in b.get('sources', [])),
                 "wikiquote": sum(1 for b in self.collected_books if 'wikiquote' in b.get('sources', [])),
-                "google_books": sum(1 for b in self.collected_books if 'google_books' in b.get('sources', [])),
                 "douban": sum(1 for b in self.collected_books if 'douban' in b.get('sources', [])),
             },
             "total_books": len(self.collected_books)
@@ -322,7 +301,7 @@ class BookCollector:
             "version": "2.0",
             "generated_at": now.isoformat() + "+08:00",
             "trade_date": trade_date,
-            "is_trading_day": False,  # 书籍采集不考虑交易日
+            "is_trading_day": False,
             "dst_active": False,
             "content": {
                 "total": len(new_books),
@@ -330,7 +309,7 @@ class BookCollector:
                 "summary": report
             },
             "metadata": {
-                "source": "wikipedia + google_books + douban + wikiquote",
+                "source": "wikipedia + douban + wikiquote",
                 "collected_at": now.isoformat(),
                 "data_type": "book_knowledge"
             }
@@ -348,7 +327,7 @@ class BookCollector:
 
 def main():
     parser = argparse.ArgumentParser(description='书籍知识库采集')
-    parser.add_argument('--max', type=int, default=500, help='最大采集数量')
+    parser.add_argument('--max', type=int, default=300, help='最大采集数量')
     parser.add_argument('--debug', action='store_true', help='调试模式')
     args = parser.parse_args()
 
@@ -363,6 +342,7 @@ def main():
         save_json(package, filepath)
         logger.info(f"✅ 书籍知识库采集完成: {filepath}")
         logger.info(f"   📚 采集书籍: {package['content']['summary']['collected']} 本")
+        logger.info(f"   📊 数据源: 维基百科 + 豆瓣 + 维基语录")
     else:
         logger.error("❌ 采集失败")
 
