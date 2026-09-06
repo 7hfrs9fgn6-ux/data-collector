@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-分类过滤模块（V5：完整关键词覆盖 + 标题优先）
+分类过滤模块（V6：扩展关键词覆盖商业/管理/会计）
 策略：标题优先 → 分类辅助 → 知识条目识别
-★ 覆盖领域：金融、行为金融、加密货币、经济学、商业、行业、人物、市场术语
+★ 覆盖领域：金融、行为金融、加密货币、经济学、商业、管理、会计、投资管理、经济史
 """
 
 import logging
@@ -13,14 +13,14 @@ logger = logging.getLogger(__name__)
 
 
 class CategoryFilter:
-    """分类过滤器（V5：完整关键词覆盖）"""
+    """分类过滤器（V6：扩展关键词覆盖商业/管理/会计）"""
 
     # ============================================================
-    # ★ 标题优先关键词（完整版，按领域分类）
+    # ★ 标题优先关键词（完整版，覆盖所有领域）
     # ============================================================
 
     TITLE_KEYWORDS = [
-        # ---------- 1. 金融与投资核心 ----------
+        # ---------- 原有金融与投资核心 ----------
         'invest', 'finance', 'financial', 'investing', 'investment',
         'market', 'trading', 'trader', 'asset', 'capital', 'credit',
         'bank', 'banking', 'money', 'wealth', 'wealthy', 'portfolio',
@@ -66,7 +66,7 @@ class CategoryFilter:
         'monte carlo', 'stress testing', 'scenario analysis', 'var',
         'expected shortfall', 'risk adjusted', 'risk management',
 
-        # ---------- 2. 行为金融学 & 心理学 ----------
+        # ---------- 原有行为金融学 & 心理学 ----------
         'prospect', 'prospect theory', 'mental accounting', 'money illusion',
         'herd', 'herd behavior', 'overconfidence', 'loss aversion',
         'framing', 'framing effect', 'cognitive', 'cognitive bias',
@@ -81,14 +81,14 @@ class CategoryFilter:
         'choice architecture', 'nudge', 'default effect', 'salience',
         'priming', 'psychology', 'psychological',
 
-        # ---------- 3. 货币 & 加密货币 ----------
+        # ---------- 原有货币 & 加密货币 ----------
         'bitcoin', 'cryptocurrency', 'digital currency', 'blockchain',
         'decentralized', 'ledger', 'crypto', 'stablecoin',
         'central bank digital currency', 'cbdc', 'tokenization',
         'smart contract', 'distributed ledger', 'fiat money',
         'gold standard',
 
-        # ---------- 4. 经济学经典 & 理论 ----------
+        # ---------- 原有经济学经典 & 理论 ----------
         'treatise', 'principles of', 'inquiry into', 'wealth of nations',
         'political economy', 'capital', 'economics of', 'theory of',
         'general theory', 'employment interest and money',
@@ -101,8 +101,8 @@ class CategoryFilter:
         'econometrics', 'game theory', 'supply side', 'demand side',
         'trickle down', 'economic growth', 'economic development',
 
-        # ---------- 5. 商业 & 管理 ----------
-        'management', 'leadership', 'strategy', 'entrepreneur',
+        # ---------- ★ 扩展：商业 & 管理（覆盖 Business_books, Management_books） ----------
+        'business', 'management', 'leadership', 'strategy', 'entrepreneur',
         'entrepreneurship', 'corporate', 'governance', 'organizational',
         'organisational', 'operations', 'supply chain', 'logistics',
         'marketing', 'brand', 'consumer', 'retail', 'e-commerce',
@@ -121,59 +121,75 @@ class CategoryFilter:
         'core competency', 'blue ocean', 'red ocean', 'disruptive innovation',
         'sustaining innovation', 'business model', 'business plan',
         'feasibility study', 'market research', 'competitive analysis',
+        'franchise', 'startup', 'scaleup', 'turnaround', 'restructuring',
+        'mergers', 'acquisitions', 'divestiture', 'joint venture',
+        'strategic alliance', 'partnership', 'supply chain management',
+        'inventory management', 'production', 'manufacturing', 'quality',
+        'customer relationship', 'crm', 'sales', 'distribution',
+        'pricing', 'cost control', 'profitability', 'efficiency',
+        'productivity improvement', 'lean management', 'agile management',
+        'project management', 'change management', 'talent management',
+        'human resources', 'recruitment', 'training', 'performance',
 
-        # ---------- 6. 行业 ----------
-        'banking', 'insurance', 'insurtech', 'actuarial', 'underwriting',
-        'claims', 'risk assessment', 'actuarial science',
-        'real estate', 'property', 'construction', 'development',
+        # ---------- ★ 扩展：会计 & 财报（覆盖 Accounting） ----------
+        'accounting', 'audit', 'auditing', 'financial reporting',
+        'balance sheet', 'income statement', 'cash flow statement',
+        'financial statement', 'gaap', 'ifrs', 'tax', 'taxation',
+        'bookkeeping', 'ledger', 'journal entry', 'debit', 'credit',
+        'trial balance', 'general ledger', 'accounting equation',
+        'asset', 'liability', 'equity', 'revenue', 'expense',
+        'depreciation', 'amortization', 'inventory', 'cost of goods sold',
+        'gross profit', 'net income', 'earnings', 'eps',
+        'accounts receivable', 'accounts payable', 'accrual',
+        'prepaid', 'deferred revenue', 'goodwill', 'intangible asset',
+        'working capital', 'current ratio', 'quick ratio', 'debt to equity',
+        'return on equity', 'return on assets', 'profit margin',
+        'audit trail', 'internal control', 'compliance', 'tax return',
+        'financial audit', 'internal audit', 'external audit', 'sox',
+        'sarbanes oxley', 'financial accounting', 'managerial accounting',
+        'cost accounting', 'tax accounting', 'forensic accounting',
+
+        # ---------- ★ 扩展：投资管理 & 组合管理 ----------
+        'asset allocation', 'asset management', 'portfolio management',
+        'wealth management', 'investment management', 'institutional investor',
+        'fund management', 'index fund', 'etf', 'mutual fund', 'hedge fund',
+        'private equity', 'venture capital', 'angel investing',
+        'risk parity', 'factor investing', 'smart beta',
+        'investment strategy', 'asset class', 'equity', 'fixed income',
+        'alternative investment', 'real estate investment', 'commodity investment',
+
+        # ---------- ★ 扩展：经济史 & 宏观周期 ----------
+        'economic history', 'business cycle', 'economic cycle',
+        'recession', 'depression', 'stagflation', 'deflation',
+        'great depression', 'financial crisis', 'economic crisis',
+        'industrial revolution', 'economic growth', 'economic development',
+        'gold standard', 'bretton woods', 'oil crisis', 'sovereign debt',
+        'euro crisis', 'asian financial crisis', 'dot com bubble',
+        'subprime mortgage crisis', 'great recession', 'globalization',
+
+        # ---------- ★ 扩展：风险 & 决策 ----------
+        'risk analysis', 'risk assessment', 'risk control', 'risk mitigation',
+        'decision making', 'decision theory', 'managerial decision',
+        'strategic decision', 'operational risk', 'market risk',
+        'credit risk', 'liquidity risk', 'systemic risk', 'model risk',
+
+        # ---------- ★ 扩展：行业与领域 ----------
+        'insurance', 'insurtech', 'actuarial', 'underwriting',
+        'claims', 'reinsurance', 'actuarial science',
         'energy', 'oil', 'gas', 'renewable energy', 'solar', 'wind',
         'nuclear', 'technology', 'software', 'hardware', 'semiconductor',
         'chip', 'pharmaceutical', 'biotech', 'healthcare', 'medical',
-        'hospital', 'retail', 'consumer', 'food', 'beverage', 'restaurant',
-        'hospitality', 'travel', 'tourism', 'aviation', 'airline',
-        'shipping', 'logistics', 'automotive', 'ev', 'autonomous vehicle',
-        'mobility', 'transportation', 'telecom', '5g', 'fiber optic',
-        'broadband', 'internet', 'web', 'cloud', 'saas', 'paas', 'iaas',
-        'cybersecurity', 'fintech', 'proptech', 'healthtech', 'edtech',
-        'agritech', 'cleantech', 'space', 'aerospace', 'defense',
-        'military', 'government', 'public sector', 'nonprofit',
-        'ngo', 'foundation', 'think tank', 'academic', 'university',
+        'hospital', 'food', 'beverage', 'restaurant', 'hospitality',
+        'travel', 'tourism', 'aviation', 'airline', 'shipping',
+        'automotive', 'ev', 'autonomous vehicle', 'mobility',
+        'telecom', '5g', 'fiber optic', 'broadband', 'internet',
+        'web', 'cloud', 'saas', 'paas', 'iaas', 'cybersecurity',
+        'fintech', 'proptech', 'healthtech', 'edtech', 'agritech',
+        'cleantech', 'space', 'aerospace', 'defense', 'military',
+        'government', 'public sector', 'nonprofit', 'ngo',
+        'foundation', 'think tank', 'academic', 'university',
 
-        # ---------- 7. 书籍 & 出版 ----------
-        'book', 'books', 'bibliography', 'literature', 'reading list',
-        'recommended reading', 'must read', 'classic', 'modern classic',
-        'bestseller', 'new york times', 'wall street journal',
-
-        # ---------- 8. 人物 & 传记 ----------
-        'buffett', 'munger', 'graham', 'keynes', 'hayek', 'friedman',
-        'kahneman', 'tversky', 'thaler', 'shiller', 'taleb', 'marks',
-        'dalio', 'lynch', 'bogle', 'fisher', 'templeton', 'soros',
-        'gates', 'jobs', 'musk', 'bezos', 'greenspan', 'bernanke',
-        'yellen', 'powell', 'draghi', 'lagarde', 'carney', 'kuroda',
-        'rajan', 'krugman', 'stiglitz', 'sen', 'deaton', 'piketty',
-        'atkinson', 'saez', 'zucman', 'acemoglu', 'robinson',
-        'banerjee', 'duflo', 'kremer', 'arrow', 'solow', 'romer',
-        'lucas', 'prescott', 'kydland', 'fama', 'french',
-        'shleifer', 'vishny', 'jensen', 'meckling', 'carhart',
-        'asness', 'ilmanen', 'pedersen', 'ang', 'bouchaud',
-        'sornette', 'mandelbrot', 'ariely', 'sunstein', 'mullainathan',
-        'shafir', 'bertrand', 'karlan', 'zinman', 'morduch',
-        'rutherford', 'collins', 'yunus', 'sachs', 'easterly',
-        'collier', 'rodrik', 'hausmann', 'hidalgo', 'fujita',
-        'venables', 'helpman', 'grossman', 'melitz', 'antras',
-        'aghion', 'howitt', 'jones', 'weil', 'barro', 'mankiw',
-        'north', 'williamson', 'ostrom', 'coase', 'alchian',
-        'demsetz', 'klein', 'crawford', 'hart', 'moore',
-        'holmstrom', 'milgrom', 'roberts', 'kreps', 'wilson',
-        'spence', 'akerlof', 'roth', 'shapley', 'myerson',
-        'maskin', 'hurwicz', 'mckenzie', 'samuelson', 'hicks',
-        'hansen', 'sargent', 'sims', 'stock', 'watson',
-        'hamilton', 'greene', 'wooldridge', 'angrist', 'imbens',
-        'card', 'krueger', 'ashenfelter', 'heckman', 'mcfadden',
-        'amemiya', 'white', 'newey', 'ljungqvist', 'stokey',
-        'cooley', 'king', 'plosser', 'rebelo', 'hall',
-
-        # ---------- 9. 市场术语 & 概念 ----------
+        # ---------- 原有市场术语 & 概念 ----------
         'bull trap', 'bear trap', 'dead cat bounce', 'pump and dump',
         'short squeeze', 'gamma squeeze', 'squeeze', 'margin call',
         'stop loss', 'take profit', 'limit order', 'market order',
@@ -194,6 +210,7 @@ class CategoryFilter:
         'theory', 'concept', 'principle', 'model',
         'person', 'biography', 'economist',
         'term', 'definition', 'glossary',
+        'history', 'cycle', 'crisis', 'recession',
     ]
 
     # ---------- 排除关键词 ----------
