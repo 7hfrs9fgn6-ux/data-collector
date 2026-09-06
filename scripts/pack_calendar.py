@@ -1,203 +1,150 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-万年历数据打包模块（知识库模式）
-从知识库中提取当前日期信息，生成轻量级状态包
+万年历打包模块（独立版）
+用途：从 raw 数据重新打包，无需重新采集
+使用：python scripts/pack_calendar.py
 
-输出：staging/calendar_status_package_*.json
+注：collect_calendar.py 已内置打包功能，此文件仅作为备用。
 """
 
-import json
 import os
 import sys
+import json
+import argparse
+import hmac
+import hashlib
+import logging
 from datetime import datetime
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 添加项目根目录到路径
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
 
-from scripts.utils import get_timestamp, save_json, load_json, sign_data
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-# ============================================================
-# 配置
-# ============================================================
-
-KNOWLEDGE_LIBRARY_DIR = "knowledge_library"
-CALENDAR_DIR = os.path.join(KNOWLEDGE_LIBRARY_DIR, "calendar")
-CALENDAR_FILE = os.path.join(CALENDAR_DIR, "calendar_knowledge.jsonl")
-META_FILE = os.path.join(CALENDAR_DIR, "meta.json")
-
-BOOK_NAME = "公开数据"
-CHAPTER_NAME = "calendar_status"
-VERSION = "2.0"
-
-SIGNING_KEY = os.environ.get("SIGNING_KEY", "")
+STAGING_DIR = os.path.join(PROJECT_ROOT, "staging")
+SIGNING_KEY = os.environ.get('SIGNING_KEY', '')
 
 
-def find_date_in_knowledge(date_str: str, year: int) -> dict:
-    """在知识库中查找指定日期的信息"""
-    if not os.path.exists(CALENDAR_FILE):
+def get_signing_key() -> str:
+    global SIGNING_KEY
+    if not SIGNING_KEY:
+        SIGNING_KEY = os.environ.get('SIGNING_KEY', '')
+    return SIGNING_KEY
+
+
+def sign_data(data: dict, key: str) -> str:
+    if not key:
+        return ""
+    sign_data_content = {k: v for k, v in data.items() 
+                         if k not in ['signature', 'signature_metadata']}
+    content = json.dumps(sign_data_content, sort_keys=True, ensure_ascii=False)
+    return hmac.new(
+        key.encode('utf-8'),
+        content.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+
+
+def find_latest_raw() -> str:
+    """找到最新的原始数据文件"""
+    import glob
+    pattern = os.path.join(STAGING_DIR, "calendar_raw_*.json")
+    files = glob.glob(pattern)
+    if not files:
+        logger.error("❌ 未找到原始数据文件 (calendar_raw_*.json)")
         return None
-
-    try:
-        with open(CALENDAR_FILE, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    year_data = json.loads(line)
-                    if year_data.get("year") == year:
-                        for day in year_data.get("days", []):
-                            if day.get("date") == date_str:
-                                return day
-                except json.JSONDecodeError:
-                    continue
-    except Exception as e:
-        print(f"⚠️ 读取知识库失败: {e}")
-
-    return None
+    return max(files, key=os.path.getmtime)
 
 
-def load_meta_info() -> dict:
-    """加载元数据信息，如果不存在则从 JSONL 中提取"""
-    meta = {}
-
-    if os.path.exists(META_FILE):
-        try:
-            meta = load_json(META_FILE)
-            if meta:
-                print(f"📋 已加载 meta.json")
-                return meta
-        except Exception as e:
-            print(f"⚠️ 读取 meta.json 失败: {e}")
-
-    # 降级：从 JSONL 文件中提取年份
-    if os.path.exists(CALENDAR_FILE):
-        years = []
-        try:
-            with open(CALENDAR_FILE, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            data = json.loads(line)
-                            if "year" in data:
-                                years.append(data["year"])
-                        except:
-                            continue
-            if years:
-                meta = {
-                    "total_years": len(years),
-                    "years": sorted(years),
-                    "last_updated": get_timestamp(),
-                }
-                print(f"📊 从 JSONL 提取年份信息: {len(years)} 年")
-        except Exception as e:
-            print(f"⚠️ 读取 JSONL 失败: {e}")
-
-    return meta
+def load_raw(filepath: str) -> dict:
+    with open(filepath, 'r', encoding='utf-8') as f:
+        return json.load(f)
 
 
-def get_current_date_status() -> dict:
-    """获取当前日期的状态信息"""
+def repack(raw_data: dict) -> dict:
+    """重新打包"""
     now = datetime.now()
-    date_str = now.strftime("%Y-%m-%d")
-    year = now.year
+    trade_date = now.strftime("%Y-%m-%d")
+    year_str = str(now.year)
 
-    day_info = find_date_in_knowledge(date_str, year)
+    # 查找今日 DST 状态
+    is_trading_day = False
+    dst_active = False
+    years_data = raw_data.get("years", {})
+    if year_str in years_data:
+        for day in years_data[year_str].get("days", []):
+            if day.get("date") == trade_date:
+                is_trading_day = day.get("a_share", {}).get("is_trading_day", False)
+                dst_active = day.get("us", {}).get("dst_active", False)
+                break
 
-    if day_info is None:
-        is_weekend = now.weekday() >= 5
-        return {
-            "date": date_str,
-            "year": year,
-            "is_trading_day": not is_weekend,
-            "is_weekend": is_weekend,
-            "dst_active": False,
-            "source": "fallback_rules",
-            "holiday_name": "",
-        }
-
-    return {
-        "date": date_str,
-        "year": year,
-        "is_trading_day": day_info.get("a_share", {}).get("is_trading_day", False),
-        "is_weekend": day_info.get("is_weekend", False),
-        "dst_active": day_info.get("us", {}).get("dst_active", False),
-        "holiday_name": day_info.get("a_share", {}).get("holiday_name", ""),
-        "source": "knowledge_library",
+    package = {
+        "book": "公开数据",
+        "chapter": "calendar",
+        "version": "2.0",
+        "generated_at": datetime.now().isoformat() + "+08:00",
+        "trade_date": trade_date,
+        "is_trading_day": is_trading_day,
+        "dst_active": dst_active,
+        "content": {
+            "start_year": raw_data.get("start_year"),
+            "end_year": raw_data.get("end_year"),
+            "total_years": raw_data.get("total_years"),
+            "total_a_share_trading_days": raw_data.get("total_a_share_trading_days"),
+            "total_hk_trading_days": raw_data.get("total_hk_trading_days"),
+            "total_us_trading_days": raw_data.get("total_us_trading_days"),
+            "years": raw_data.get("years", {}),
+        },
+        "metadata": raw_data.get("metadata", {}),
     }
+
+    key = get_signing_key()
+    if key:
+        package["signature"] = sign_data(package, key)
+    else:
+        package["signature"] = None
+
+    return package
+
+
+def save_package(package: dict) -> str:
+    os.makedirs(STAGING_DIR, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"calendar_package_{timestamp}.json"
+    filepath = os.path.join(STAGING_DIR, filename)
+    with open(filepath, 'w', encoding='utf-8') as f:
+        json.dump(package, f, ensure_ascii=False, indent=2)
+    return filepath
 
 
 def main():
-    """主函数"""
-    print("=" * 60)
-    print("📦 万年历状态打包（知识库模式）")
-    print("=" * 60)
+    parser = argparse.ArgumentParser(description='万年历重新打包（从 raw 数据）')
+    parser.add_argument('--input', help='指定 raw 文件路径')
+    args = parser.parse_args()
 
-    # 确保 staging 目录存在
-    os.makedirs("staging", exist_ok=True)
+    logger.info("📦 万年历重新打包")
 
-    if not SIGNING_KEY:
-        print("⚠️ 警告: SIGNING_KEY 环境变量未设置")
-
-    # 1. 获取当前日期状态
-    status = get_current_date_status()
-
-    print(f"\n📅 当前日期状态:")
-    print(f"   📅 日期: {status['date']}")
-    print(f"   📊 交易日: {'✅' if status['is_trading_day'] else '❌'}")
-    print(f"   🕐 DST 状态: {'✅ 夏令时' if status['dst_active'] else '❌ 冬令时'}")
-    if status.get('holiday_name'):
-        print(f"   🎉 节假日: {status['holiday_name']}")
-
-    # 2. 加载 meta 信息
-    meta = load_meta_info()
-    years_range = ""
-    if meta.get("years"):
-        years_list = meta.get("years", [])
-        years_range = f"{years_list[0]} ~ {years_list[-1]}" if years_list else "N/A"
-
-    # 3. 构建数据包
-    package = {
-        "book": BOOK_NAME,
-        "chapter": CHAPTER_NAME,
-        "version": VERSION,
-        "generated_at": get_timestamp(),
-        "trade_date": status["date"],
-        "is_trading_day": status["is_trading_day"],
-        "dst_active": status["dst_active"],
-        "content": {
-            "current_date": status["date"],
-            "is_trading_day": status["is_trading_day"],
-            "is_weekend": status["is_weekend"],
-            "dst_active": status["dst_active"],
-            "holiday_name": status.get("holiday_name", ""),
-            "source": status.get("source", ""),
-            "knowledge_summary": {
-                "total_years": meta.get("total_years", 0),
-                "years_range": years_range,
-                "last_updated": meta.get("last_updated", ""),
-            }
-        },
-    }
-
-    # 4. 签名
-    if SIGNING_KEY:
-        signed_package = sign_data(package, SIGNING_KEY)
+    if args.input:
+        raw_file = args.input
     else:
-        signed_package = package
-        print("⚠️ 未签名（SIGNING_KEY 未设置）")
+        raw_file = find_latest_raw()
 
-    # 5. 保存打包文件
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    package_file = f"staging/calendar_status_package_{timestamp}.json"
+    if not raw_file or not os.path.exists(raw_file):
+        logger.error(f"❌ 文件不存在: {raw_file}")
+        return 1
 
-    # ✅ 正确：文件路径在前，数据在后
-    save_json(package_file, signed_package)
-    print(f"\n✅ 状态包已保存: {package_file}")
+    logger.info(f"   📂 原始数据: {raw_file}")
+    raw_data = load_raw(raw_file)
 
-    print("\n✅ 万年历状态打包完成")
+    package = repack(raw_data)
+    filepath = save_package(package)
+
+    logger.info(f"✅ 打包完成: {filepath}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
