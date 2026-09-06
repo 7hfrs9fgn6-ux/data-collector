@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-万年历数据打包模块
-将采集到的日历数据打包为统一格式数据包
-输出：staging/calendar_package_*.json
+万年历数据打包模块（知识库模式）
+将采集的数据打包为统一格式数据包，供私密库拉取
+
+注意：此模块不再生成每日数据包，而是从知识库中提取当前日期信息
+生成一个轻量级的"当前日期状态包"，供私密库快速查询当日是否交易日
+
+输出：staging/calendar_status_package_*.json（轻量级，约 1KB）
 """
 
 import json
@@ -15,139 +19,141 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scripts.utils import get_timestamp, save_json, load_json, sign_data
 
-
 # ============================================================
 # 配置
 # ============================================================
 
+KNOWLEDGE_LIBRARY_DIR = "knowledge_library"
+CALENDAR_DIR = os.path.join(KNOWLEDGE_LIBRARY_DIR, "calendar")
+CALENDAR_FILE = os.path.join(CALENDAR_DIR, "calendar_knowledge.jsonl")
+META_FILE = os.path.join(CALENDAR_DIR, "meta.json")
+
 BOOK_NAME = "公开数据"
-CHAPTER_NAME = "calendar"
+CHAPTER_NAME = "calendar_status"
 VERSION = "2.0"
 
 
-# ============================================================
-# 打包函数
-# ============================================================
-
-def load_calendar_raw() -> dict:
-    """加载原始日历数据"""
-    raw_file = "staging/calendar_raw.json"
-
-    if not os.path.exists(raw_file):
-        print(f"❌ 原始文件不存在: {raw_file}")
+def find_date_in_knowledge(date_str: str, year: int) -> dict:
+    """在知识库中查找指定日期的信息"""
+    if not os.path.exists(CALENDAR_FILE):
         return None
 
     try:
-        data = load_json(raw_file)
-        if data.get("collection_status") != "success":
-            print("⚠️ 采集状态不是 success，可能数据不完整")
-        return data
+        with open(CALENDAR_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    year_data = json.loads(line)
+                    if year_data.get("year") == year:
+                        # 查找该日期
+                        for day in year_data.get("days", []):
+                            if day.get("date") == date_str:
+                                return day
+                except json.JSONDecodeError:
+                    continue
     except Exception as e:
-        print(f"❌ 加载原始数据失败: {e}")
-        return None
+        print(f"⚠️ 读取知识库失败: {e}")
+
+    return None
 
 
-def build_calendar_package(raw_data: dict) -> dict:
-    """
-    构建统一格式的万年历数据包
-    """
-    # 提取 trade_date
+def get_current_date_status() -> dict:
+    """获取当前日期的状态信息"""
     now = datetime.now()
-    trade_date = now.strftime("%Y-%m-%d")
+    date_str = now.strftime("%Y-%m-%d")
+    year = now.year
 
-    # 判断今日是否为交易日
-    # 从日历数据中查找今日
-    today_str = now.strftime("%Y-%m-%d")
-    is_trading_day = False
-    dst_active = False
+    # 从知识库查找
+    day_info = find_date_in_knowledge(date_str, year)
 
-    calendar_data = raw_data.get("data", {})
-    years = calendar_data.get("years", {})
+    if day_info is None:
+        # 降级：返回基于规则判断
+        is_weekend = now.weekday() >= 5
+        return {
+            "date": date_str,
+            "year": year,
+            "is_trading_day": not is_weekend,
+            "is_weekend": is_weekend,
+            "dst_active": False,
+            "source": "fallback_rules",
+            "holiday_name": "",
+        }
 
-    # 查找今日所在的年份
-    year_str = str(now.year)
-    if year_str in years:
-        year_data = years[year_str]
-        days = year_data.get("days", [])
-        for day in days:
-            if day.get("date") == today_str:
-                is_trading_day = day.get("a_share", {}).get("is_trading_day", False)
-                dst_active = day.get("us", {}).get("dst_active", False)
-                break
-
-    # 构建数据包
-    package = {
-        "book": BOOK_NAME,
-        "chapter": CHAPTER_NAME,
-        "version": VERSION,
-        "generated_at": get_timestamp(),
-        "trade_date": trade_date,
-        "is_trading_day": is_trading_day,
-        "dst_active": dst_active,
-        "content": {
-            "start_year": calendar_data.get("start_year", 1990),
-            "end_year": calendar_data.get("end_year", 2030),
-            "summary": calendar_data.get("summary", {}),
-            "dst_info": {},
-            "years": {},
-        },
+    return {
+        "date": date_str,
+        "year": year,
+        "is_trading_day": day_info.get("a_share", {}).get("is_trading_day", False),
+        "is_weekend": day_info.get("is_weekend", False),
+        "dst_active": day_info.get("us", {}).get("dst_active", False),
+        "holiday_name": day_info.get("a_share", {}).get("holiday_name", ""),
+        "source": "knowledge_library",
     }
-
-    # 提取 DST 信息（当前年份）
-    if year_str in years:
-        package["content"]["dst_info"] = years[year_str].get("dst_info", {})
-
-    # 压缩数据：保留年份级别的摘要，不展开每一天（数据量太大）
-    # 但为了私密库查询需要，保留完整数据
-    # 实际使用中，私密库可以根据需要拉取完整数据或摘要
-    package["content"]["years"] = years
-
-    return package
 
 
 def main():
     """主函数"""
     print("=" * 60)
-    print("📦 万年历数据打包")
+    print("📦 万年历状态打包（知识库模式）")
     print("=" * 60)
 
     # 确保 staging 目录存在
     os.makedirs("staging", exist_ok=True)
 
-    # 1. 加载原始数据
-    raw_data = load_calendar_raw()
-    if raw_data is None:
-        print("❌ 无法加载原始数据，打包失败")
-        sys.exit(1)
+    # 1. 获取当前日期状态
+    status = get_current_date_status()
 
-    # 2. 构建数据包
-    package = build_calendar_package(raw_data)
+    print(f"\n📅 当前日期状态:")
+    print(f"   📅 日期: {status['date']}")
+    print(f"   📊 交易日: {'✅' if status['is_trading_day'] else '❌'}")
+    print(f"   🕐 DST 状态: {'✅ 夏令时' if status['dst_active'] else '❌ 冬令时'}")
+    if status.get('holiday_name'):
+        print(f"   🎉 节假日: {status['holiday_name']}")
 
-    # 3. 签名
+    # 2. 读取 meta 信息（年份范围等）
+    meta = {}
+    if os.path.exists(META_FILE):
+        try:
+            meta = load_json(META_FILE)
+        except:
+            pass
+
+    # 3. 构建数据包
+    package = {
+        "book": BOOK_NAME,
+        "chapter": CHAPTER_NAME,
+        "version": VERSION,
+        "generated_at": get_timestamp(),
+        "trade_date": status["date"],
+        "is_trading_day": status["is_trading_day"],
+        "dst_active": status["dst_active"],
+        "content": {
+            "current_date": status["date"],
+            "is_trading_day": status["is_trading_day"],
+            "is_weekend": status["is_weekend"],
+            "dst_active": status["dst_active"],
+            "holiday_name": status.get("holiday_name", ""),
+            "source": status.get("source", ""),
+            "knowledge_summary": {
+                "total_years": meta.get("total_years", 0),
+                "years_range": f"{meta.get('years', ['N/A'])[0] if meta.get('years') else 'N/A'} ~ {meta.get('years', ['N/A'])[-1] if meta.get('years') else 'N/A'}",
+                "last_updated": meta.get("last_updated", ""),
+            }
+        },
+    }
+
+    # 4. 签名
     signed_package = sign_data(package)
 
-    # 4. 保存打包文件
+    # 5. 保存打包文件
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    package_file = f"staging/calendar_package_{timestamp}.json"
+    package_file = f"staging/calendar_status_package_{timestamp}.json"
 
     save_json(package_file, signed_package)
-    print(f"✅ 打包文件已保存: {package_file}")
+    print(f"\n✅ 状态包已保存: {package_file}")
 
-    # 5. 打印摘要
-    content = package.get("content", {})
-    summary = content.get("summary", {})
-    print("\n📊 打包摘要:")
-    print(f"   📅 年份范围: {content.get('start_year')} ~ {content.get('end_year')}")
-    print(f"   🇨🇳 A股交易日总数: {summary.get('a_share_total_trading_days', 0)}")
-    print(f"   🇭🇰 港股交易日总数: {summary.get('hk_total_trading_days', 0)}")
-    print(f"   🇺🇸 美股交易日总数: {summary.get('us_total_trading_days', 0)}")
-    print(f"   📅 trade_date: {package.get('trade_date')}")
-    print(f"   📅 is_trading_day: {package.get('is_trading_day')}")
-    print(f"   🕐 dst_active: {package.get('dst_active')}")
-
-    # 6. 清理临时文件（可选）
-    # 保留 raw 文件用于调试，可定期清理
-    print("\n✅ 万年历打包完成")
+    print("\n✅ 万年历状态打包完成")
 
 
 if __name__ == "__main__":
