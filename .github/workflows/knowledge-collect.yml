@@ -14,7 +14,7 @@ on:
       max_books:
         description: '最大采集数量'
         required: false
-        default: '500'
+        default: '800'
         type: string
 
 permissions:
