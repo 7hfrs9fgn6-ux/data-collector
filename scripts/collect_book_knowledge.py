@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-书籍知识库主采集程序（V8：最大化采集）
+书籍知识库主采集程序V8
 策略：所有匹配标题的条目都入库，入库后分类存储
 原则：不丢弃任何相关信息
 """
@@ -177,7 +177,6 @@ class BookCollector:
                 "status": "active"
             }
 
-        # 补充豆瓣信息
         if douban_data:
             result["title_cn"] = douban_data.get("title_cn", result.get("title_cn", ''))
             if entry_type == 'book':
@@ -194,7 +193,6 @@ class BookCollector:
 
     def _build_minimal_result(self, title: str, douban_data: Dict = None) -> Dict:
         """构建最小结果（无 wiki_data 时使用）"""
-        # 根据标题推断类型
         entry_type = 'concept'
         title_lower = title.lower()
         if any(k in title_lower for k in ['theory']):
@@ -243,12 +241,10 @@ class BookCollector:
         """
         title = candidate.get('title', '')
 
-        # ★ 1. 标题必须匹配金融关键词
         if not self.category_filter.is_finance_title(title):
             logger.debug(f"      ⛔ 非金融: {title}")
             return None
 
-        # ★ 2. 尝试获取 wiki_data（尽力获取）
         wiki_data = None
         for retry in range(3):
             try:
@@ -259,24 +255,19 @@ class BookCollector:
             except Exception:
                 time.sleep(1)
 
-        # ★ 3. 获取豆瓣信息
         douban_data = get_douban_info(title)
 
-        # ★ 4. 获取语录（仅当有 wiki_data 时尝试）
         quotes = []
         if wiki_data:
             quotes = get_quotes_for_book(title)
 
-        # ★ 5. 推断类型
         entry_type = self._infer_type(wiki_data, title) if wiki_data else 'concept'
 
-        # ★ 6. 构建结果（所有条目都入库）
         if wiki_data:
             result = self._build_result(wiki_data, title, entry_type, quotes, douban_data)
         else:
             result = self._build_minimal_result(title, douban_data)
 
-        # 记录类型
         result['_inferred_type'] = entry_type
 
         return result
@@ -326,7 +317,6 @@ class BookCollector:
 
             if item_data:
                 entry_type = item_data.get('type', 'concept')
-                # 移除内部字段
                 item_data.pop('_inferred_type', None)
 
                 if entry_type == 'book':
