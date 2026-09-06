@@ -49,7 +49,7 @@ class HKStockCollector:
     INDICES = {
         "^HSI": "恒生指数",
         "^HSCE": "恒生国企指数",
-        "^HSTECH": "恒生科技指数",
+        "^HSIT": "恒生科技指数",
     }
 
     # akshare 备用代码（如果 yfinance 失败）
