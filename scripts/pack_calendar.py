@@ -2,6 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 万年历数据打包模块（知识库模式）
+从知识库中提取当前日期信息，生成轻量级状态包
+
+输出：staging/calendar_status_package_*.json
 """
 
 import json
@@ -58,11 +61,12 @@ def load_meta_info() -> dict:
     """加载元数据信息，如果不存在则从 JSONL 中提取"""
     meta = {}
 
-    # 优先读取 meta.json
     if os.path.exists(META_FILE):
         try:
             meta = load_json(META_FILE)
-            return meta
+            if meta:
+                print(f"📋 已加载 meta.json")
+                return meta
         except Exception as e:
             print(f"⚠️ 读取 meta.json 失败: {e}")
 
@@ -130,6 +134,7 @@ def main():
     print("📦 万年历状态打包（知识库模式）")
     print("=" * 60)
 
+    # 确保 staging 目录存在
     os.makedirs("staging", exist_ok=True)
 
     if not SIGNING_KEY:
