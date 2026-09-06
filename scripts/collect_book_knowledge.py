@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-书籍知识库主采集程序（V9：预检测 + 优化）
+书籍知识库主采集程序（V8：最大化采集）
 策略：所有匹配标题的条目都入库，入库后分类存储
-新增：预检测页面存在性，避免无效请求
+原则：不丢弃任何相关信息
 """
 
 import os
@@ -41,7 +41,7 @@ ENTRY_DETAILS_DIR = os.path.join(KNOWLEDGE_LIBRARY_DIR, "knowledge_entries")
 
 
 class BookCollector:
-    """书籍/知识条目采集器（V9：预检测）"""
+    """书籍/知识条目采集器（V8：最大化采集）"""
 
     def __init__(self, max_items: int = 500, debug: bool = False):
         self.max_items = max_items
@@ -52,8 +52,6 @@ class BookCollector:
         self.failed_items = []
         self.category_filter = CategoryFilter()
         self.wiki_parser = WikipediaParser('en')
-        # ★ 缓存页面存在性检测结果
-        self._page_exists_cache = {}
 
         os.makedirs(KNOWLEDGE_LIBRARY_DIR, exist_ok=True)
         os.makedirs(BOOK_DETAILS_DIR, exist_ok=True)
@@ -76,43 +74,6 @@ class BookCollector:
             "updated_at": datetime.now().isoformat()
         }
         save_json(checkpoint, CHECKPOINT_FILE)
-
-    # ============================================================
-    # ★ 新增：页面存在性预检测
-    # ============================================================
-
-    def _page_exists(self, title: str) -> bool:
-        """快速检测维基百科页面是否存在（带缓存）"""
-        if title in self._page_exists_cache:
-            return self._page_exists_cache[title]
-
-        try:
-            import requests
-            params = {
-                "action": "query",
-                "format": "json",
-                "titles": title,
-                "prop": "info",
-            }
-            response = requests.get(
-                self.wiki_parser.api_url,
-                params=params,
-                timeout=5,
-                headers={"User-Agent": "VSystem-DataCollector/1.0"}
-            )
-            data = response.json()
-            pages = data.get('query', {}).get('pages', {})
-            for page_id in pages:
-                if page_id != "-1":
-                    self._page_exists_cache[title] = True
-                    return True
-            self._page_exists_cache[title] = False
-            return False
-        except Exception as e:
-            # 无法检测时默认尝试采集
-            logger.debug(f"      ⚠️ 页面检测失败，默认尝试: {title} ({e})")
-            self._page_exists_cache[title] = True
-            return True
 
     # ============================================================
     # ★ 核心：类型推断（基于实际数据）
@@ -270,23 +231,18 @@ class BookCollector:
         return result
 
     # ============================================================
-    # ★ 核心采集逻辑（V9：预检测）
+    # ★ 核心采集逻辑（V8：最大化采集）
     # ============================================================
 
     def _collect_single_item(self, candidate: Dict) -> Optional[Dict]:
         """
-        采集单个条目（V9：最大化采集 + 预检测）
+        采集单个条目（V8：最大化采集）
         原则：所有匹配标题的条目都入库，不丢弃
         """
         title = candidate.get('title', '')
 
         if not self.category_filter.is_finance_title(title):
             logger.debug(f"      ⛔ 非金融: {title}")
-            return None
-
-        # ★ 预检测：页面是否存在（快速检测，避免无效请求）
-        if not self._page_exists(title):
-            logger.debug(f"      ⛔ 页面不存在: {title}")
             return None
 
         wiki_data = None
@@ -322,7 +278,7 @@ class BookCollector:
 
     def collect(self) -> Dict[str, Any]:
         logger.info("=" * 60)
-        logger.info("📚 书籍/知识库采集启动（V9：预检测优化）")
+        logger.info("📚 书籍/知识库采集启动（V8：最大化采集）")
         logger.info("=" * 60)
 
         seed_file = os.path.join(KNOWLEDGE_LIBRARY_DIR, "seed_sources.json")
@@ -468,7 +424,7 @@ class BookCollector:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='书籍/知识库采集（V9：预检测优化）')
+    parser = argparse.ArgumentParser(description='书籍/知识库采集（V8：最大化采集）')
     parser.add_argument('--max', type=int, default=300, help='最大采集数量')
     parser.add_argument('--debug', action='store_true', help='调试模式')
     args = parser.parse_args()
