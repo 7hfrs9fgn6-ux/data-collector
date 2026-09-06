@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-港股数据打包模块（独立版）
-用途：从 raw 数据重新打包，无需重新采集
+港股数据打包模块
+用途：从采集数据重新打包为统一格式
 使用：python scripts/pack_hk_stock.py
-
-注：collect_hk_stock.py 已内置打包功能，此文件仅作为备用。
 """
 
 import sys
 import os
-import json
+import glob
 import argparse
 from datetime import datetime
 
@@ -37,17 +35,11 @@ def get_signing_key() -> str:
 
 
 def build_package(indices_data: list) -> dict:
-    """
-    构建统一格式的港股数据包
-    """
+    """构建统一格式的港股数据包"""
     now = datetime.now()
     trade_date = now.strftime("%Y-%m-%d")
-    
-    # 判断是否有有效数据
     is_trading_day = len(indices_data) > 0 and any(d.get('price', 0) > 0 for d in indices_data)
-    
-    # 港股不实行夏令时
-    dst_active = False
+    dst_active = False  # 港股不实行夏令时
 
     package = {
         "book": "公开数据",
@@ -62,7 +54,7 @@ def build_package(indices_data: list) -> dict:
             "indices": indices_data,
         },
         "metadata": {
-            "source": "yfinance/akshare",
+            "source": "yfinance + akshare",
             "collected_at": now.isoformat(),
             "data_type": "hk_stock",
         },
@@ -79,25 +71,10 @@ def build_package(indices_data: list) -> dict:
     return package
 
 
-def save_package(package: dict) -> str:
-    """保存打包数据到暂存区"""
-    os.makedirs(STAGING_DIR, exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"hk_stock_package_{timestamp}.json"
-    filepath = os.path.join(STAGING_DIR, filename)
-
-    save_json(filepath, package)
-    logger.info(f"✅ 已保存: {filename}")
-    return filepath
-
-
 def find_latest_raw() -> str:
-    """找到最新的原始数据文件"""
-    import glob
-    pattern = os.path.join(STAGING_DIR, "hk_stock_*.json")
+    """找到最新的原始数据文件（排除 package 和 cache）"""
+    pattern = os.path.join(STAGING_DIR, "hk_stock_[0-9]*.json")
     files = glob.glob(pattern)
-    # 排除 package 文件
     files = [f for f in files if 'package' not in f and 'cache' not in f]
     if not files:
         return None
@@ -121,8 +98,8 @@ def main():
         return 1
 
     logger.info(f"   📂 原始数据: {raw_file}")
-    raw_data = load_json(raw_file)
 
+    raw_data = load_json(raw_file)
     if raw_data is None:
         logger.error("❌ 无法加载原始数据")
         return 1
@@ -131,10 +108,24 @@ def main():
     if not indices_data:
         logger.warning("⚠️ 原始数据中没有指数项，将生成空包")
 
+    # 打包
     package = build_package(indices_data)
-    filepath = save_package(package)
 
+    # ★ 保存：先 filepath，再 package
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filepath = os.path.join(STAGING_DIR, f"hk_stock_package_{timestamp}.json")
+    
+    os.makedirs(STAGING_DIR, exist_ok=True)
+    save_json(filepath, package)
+    
     logger.info(f"✅ 打包完成: {filepath}")
+
+    # 打印摘要
+    content = package.get('content', {})
+    logger.info(f"   📊 指数数量: {content.get('total', 0)}")
+    logger.info(f"   📅 trade_date: {package.get('trade_date')}")
+    logger.info(f"   🔐 签名状态: {'✅ 已签名' if package.get('signature') else '⚠️ 未签名'}")
+
     return 0
 
 
