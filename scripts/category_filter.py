@@ -1,226 +1,176 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-分类过滤模块（优化版 V2）
-职责：
-  1. 根据白名单过滤书籍
-  2. 多源验证分类匹配度
-  3. ★ 标题优先策略：标题匹配则跳过分类过滤
-  4. ★ 宽松匹配模式：分类匹配更灵活
+分类过滤模块（优化版 V3）
+策略：标题优先 → 分类辅助 → 降级保留
 """
 
 import re
 import logging
-from typing import Dict, List, Set, Optional, Any
-from collections import Counter
+from typing import Dict, List, Any
 
 logger = logging.getLogger(__name__)
 
 
 class CategoryFilter:
-    """分类过滤器（优化版）"""
-
-    # ★ 扩展白名单（增加细化分类）
-    ALLOWED_CATEGORIES = {
-        # 金融与投资
-        'finance', 'investing', 'investment', 'financial_markets',
-        'asset_pricing', 'risk_management', 'portfolio_management',
-        'value_investing', 'quantitative_finance', 'derivatives',
-        'corporate_finance', 'behavioral_finance', 'financial_economics',
-        'personal finance', 'wealth management', 'asset management',
-        'money management', 'financial planning', 'retirement planning',
-        'financial literacy', 'financial independence',
-
-        # 经济学
-        'economics', 'macroeconomics', 'microeconomics',
-        'econometrics', 'political_economy', 'economic_history',
-        'behavioral_economics', 'development_economics',
-        'monetary economics', 'international economics',
-
-        # 商业与管理
-        'business', 'management', 'strategy', 'leadership',
-        'organizational_behavior', 'decision_theory', 'game_theory',
-        'entrepreneurship', 'corporate governance', 'business history',
-        'operations management', 'supply chain', 'marketing',
-
-        # 心理学与思维
-        'psychology', 'cognitive_science', 'cognitive_psychology',
-        'mental_models', 'decision_making', 'thinking',
-        'behavioral science', 'human behavior',
-
-        # 历史与传记
-        'financial_history', 'business_history', 'economic_history',
-        'biography', 'autobiography', 'memoir',
-
-        # 数据与量化
-        'statistics', 'data_science', 'machine_learning',
-        'operations_research', 'mathematics', 'quantitative_analysis',
-
-        # 会计与法律
-        'accounting', 'financial_law', 'commercial_law',
-        'tax', 'auditing',
-
-        # ★ 新增细化分类
-        'corporate', 'business strategy', 'business management',
-        'philosophy', 'philosophy of economics', 'philosophy of finance',
-        'investor psychology', 'market psychology', 'trading psychology',
-        'financial crisis', 'economic crisis', 'banking',
-        'public finance', 'fiscal policy', 'monetary policy',
-        'global economy', 'international trade', 'development finance',
-        'venture capital', 'private equity', 'hedge funds',
-        'mutual funds', 'etf', 'index funds', 'passive investing',
-        'active investing', 'technical analysis', 'fundamental analysis',
-        'real estate investing', 'property investing',
-    }
+    """分类过滤器（V3：标题优先）"""
 
     # ★ 标题优先关键词（匹配即通过）
-    TITLE_PRIORITY_KEYWORDS = [
+    TITLE_KEYWORDS = [
+        # 金融与投资
         'invest', 'finance', 'econom', 'market', 'trade', 'asset',
         'capital', 'credit', 'bank', 'money', 'wealth', 'portfolio',
-        'stock', 'bond', 'fund', 'risk', 'decision', 'behavior',
-        'psycholog', 'strategy', 'management', 'business', 'valuation',
-        'cash', 'debt', 'equity', 'inflation', 'tax', 'accounting',
-        'merger', 'acquisition', 'venture', 'hedge', 'monetary',
-        'fiscal', 'currency', 'gold', 'commodity', 'real estate',
-        'mortgage', 'loan', 'financial', 'banking', 'investing',
-        'trading', 'wealthy', 'street', 'gate', 'paper', 'lenders',
-        'capitalism', 'rich', 'poor', 'babylon', 'smartest', 'snowball',
+        'stock', 'bond', 'fund', 'risk', 'valuation', 'cash', 'debt',
+        'equity', 'inflation', 'tax', 'accounting', 'merger', 'acquisition',
+        'venture', 'hedge', 'monetary', 'fiscal', 'currency', 'gold',
+        'commodity', 'real estate', 'mortgage', 'loan', 'financial',
+        'banking', 'investing', 'trading', 'wealthy',
+        
+        # 金融书籍常见词
+        'street', 'gate', 'paper', 'lenders', 'capitalism',
+        'rich', 'poor', 'babylon', 'smartest', 'snowball',
         'millionaire', 'billionaire', 'profit', 'margin', 'insurance',
         'pension', 'retirement', 'budget', 'audit', 'corporate',
         'dividend', 'earnings', 'recession', 'interest', 'tariff',
         'forex', 'oil', 'energy', 'property', 'saving',
         'value', 'growth', 'income', 'expense', 'liability',
-        'net worth', 'stock market', 'bond market', 'buffett',
-        'soros', 'munger', 'graham', 'investor', 'trader'
+        'buffett', 'soros', 'munger', 'graham', 'investor', 'trader',
+        
+        # ★ 行为金融学
+        'prospect', 'mental accounting', 'money illusion', 'herd',
+        'overconfidence', 'loss aversion', 'framing', 'cognitive',
+        'behavioral', 'heuristic', 'bias', 'fallacy', 'psycholog',
+        'decision', 'judgment', 'uncertainty',
+        
+        # ★ 货币/比特币/加密货币
+        'bitcoin', 'cryptocurrency', 'monetary', 'gold standard',
+        'fiat', 'digital currency', 'blockchain',
+        
+        # ★ 保险/风险
+        'insurance', 'actuarial', 'risk management', 'underwriting',
+        
+        # ★ 经济学经典
+        'treatise', 'principles of', 'inquiry into', 'wealth of nations',
+        'capital', 'economics of', 'theory of', 'political economy',
+        
+        # ★ 企业管理/商业
+        'management', 'leadership', 'strategy', 'entrepreneur',
+        'corporate', 'business', 'startup', 'venture',
+        'organizational', 'organisational',
+        
+        # ★ 其他
+        'breakout', 'nations', 'global', 'crisis', 'recovery',
+        'bubble', 'crash', 'regulation', 'deregulation',
+        'banking', 'lender', 'borrower', 'credit', 'debt',
+        'interest rate', 'yield', 'dividend', 'buyback',
+        'shareholder', 'stakeholder', 'governance',
+        'trust', 'antitrust', 'monopoly', 'competition',
+        'welfare', 'poverty', 'inequality', 'distribution',
+        'growth', 'productivity', 'employment', 'unemployment',
+        'trade war', 'tariff war', 'sanction', 'embargo',
+        'stimulus', 'bailout', 'quantitative easing', 'taper',
+        'inflation targeting', 'independence', 'central bank',
+        'fed', 'federal reserve', 'ecb', 'boj', 'boe',
+        'imf', 'world bank', 'wto', 'oecd', 'g20',
+        'emerging market', 'frontier market', 'developed market',
+        'bull', 'bear', 'correction', 'rally', 'sell-off',
     ]
 
-    # 排除关键词
-    EXCLUDED_KEYWORDS = {
-        'fiction', 'novel', 'science_fiction', 'fantasy',
+    # ★ 分类匹配关键词（辅助，仅当标题不匹配时使用）
+    CATEGORY_KEYWORDS = [
+        'finance', 'investing', 'investment', 'economics', 'business',
+        'management', 'accounting', 'banking', 'insurance', 'risk',
+        'valuation', 'monetary', 'fiscal', 'trade', 'market',
+        'capital', 'asset', 'fund', 'corporate', 'entrepreneur',
+        'behavioral', 'cognitive', 'psychology',
+        'strategy', 'leadership', 'organizational',
+    ]
+
+    EXCLUDED_KEYWORDS = [
+        'fiction', 'novel', 'science fiction', 'fantasy',
         'mystery', 'thriller', 'romance', 'horror',
         'poetry', 'drama', 'theater', 'play',
-        'children', 'juvenile', 'young_adult',
+        'children', 'juvenile', 'young adult',
         'cookbook', 'cooking', 'food',
-        'self_help', 'spirituality', 'religion', 'bible', 'quran',
+        'self help', 'spirituality', 'religion', 'bible', 'quran',
         'health', 'fitness', 'diet', 'travel', 'guide', 'tour',
         'craft', 'hobby', 'diy', 'art', 'music', 'photography',
         'sports', 'exercise', 'gym', 'language', 'dictionary', 'grammar'
-    }
+    ]
 
     def __init__(self):
-        self.allowed_categories = self.ALLOWED_CATEGORIES
+        self.title_keywords = self.TITLE_KEYWORDS
+        self.category_keywords = self.CATEGORY_KEYWORDS
         self.excluded_keywords = self.EXCLUDED_KEYWORDS
-        self.title_keywords = self.TITLE_PRIORITY_KEYWORDS
 
     def is_book_relevant(self, categories: List[str], title: str = '') -> bool:
         """
-        判断书籍是否相关
-        ★ 优化：标题优先匹配 → 通过
-        ★ 优化：宽松分类匹配
+        ★ 判断书籍是否相关（V3：标题优先）
+        1. 标题匹配关键词 → 直接通过（跳过分类检查）
+        2. 标题不匹配 → 检查分类
+        3. 分类匹配 → 通过
+        4. 都不匹配 → 拒绝
         """
-        if not categories:
-            # 没有分类时，依赖标题判断
-            return self._check_title(title)
-
-        # ★ 1. 标题优先匹配（匹配则直接通过，不检查分类）
+        # ★ 1. 标题优先匹配
         if self._check_title(title):
             return True
 
-        # ★ 2. 宽松分类匹配
-        for cat in categories:
-            cat_lower = cat.lower()
+        # 2. 分类匹配（辅助）
+        if not categories:
+            return False
 
-            # 检查排除关键词
-            for excluded in self.excluded_keywords:
-                if excluded in cat_lower:
-                    return False
+        cat_text = ' '.join(categories).lower()
+        
+        # 检查排除关键词
+        for excluded in self.excluded_keywords:
+            if excluded in cat_text:
+                return False
 
-            # ★ 检查白名单匹配（双向匹配）
-            for allowed in self.allowed_categories:
-                # 方式1：分类包含白名单词
-                if allowed in cat_lower:
-                    return True
-                # 方式2：白名单词包含分类（处理 "Personal finance" 这类）
-                if cat_lower in allowed:
-                    return True
+        # 检查分类关键词（宽松匹配）
+        for keyword in self.category_keywords:
+            if keyword in cat_text:
+                return True
 
         return False
 
     def _check_title(self, title: str) -> bool:
-        """通过标题判断是否相关"""
+        """标题匹配关键词"""
         if not title:
             return False
 
         title_lower = title.lower()
 
-        # ★ 检查标题关键词
+        # 逐词匹配
         for keyword in self.title_keywords:
             if keyword in title_lower:
                 return True
 
         return False
 
+    def is_finance_title(self, title: str) -> bool:
+        """公开方法：判断标题是否为金融相关（供采集器使用）"""
+        return self._check_title(title)
+
     def get_relevance_score(self, categories: List[str], title: str = '') -> float:
-        """计算相关性得分 (0-1)"""
-        # 标题匹配优先
+        """计算相关性得分（0-1）"""
+        # 标题匹配 → 高分
         if self._check_title(title):
-            return 0.9
+            return 0.95
 
         if not categories:
             return 0.0
 
+        cat_text = ' '.join(categories).lower()
         match_count = 0
-        for cat in categories:
-            cat_lower = cat.lower()
-            for allowed in self.allowed_categories:
-                if allowed in cat_lower or cat_lower in allowed:
-                    match_count += 1
-                    break
+        for keyword in self.category_keywords:
+            if keyword in cat_text:
+                match_count += 1
 
-        return match_count / len(categories) if categories else 0.0
-
-    def multi_source_validate(self, source_results: Dict[str, Any]) -> Dict[str, Any]:
-        """多源验证：从不同来源验证分类一致性"""
-        all_categories = []
-        source_names = []
-
-        wiki_categories = source_results.get('wikipedia', {}).get('categories', [])
-        if wiki_categories:
-            all_categories.extend(wiki_categories)
-            source_names.append('wikipedia')
-
-        douban_categories = source_results.get('douban', {}).get('categories', [])
-        if douban_categories:
-            all_categories.extend(douban_categories)
-            source_names.append('douban')
-
-        if not all_categories:
-            return {
-                'valid': False,
-                'score': 0.0,
-                'sources': source_names,
-                'categories': [],
-                'reason': '没有可用分类'
-            }
-
-        category_counts = Counter(all_categories)
-        relevance_score = self.get_relevance_score(all_categories)
-
-        is_valid = relevance_score >= 0.3 or len(source_names) >= 2
-
-        return {
-            'valid': is_valid,
-            'score': relevance_score,
-            'sources': source_names,
-            'categories': all_categories,
-            'category_counts': dict(category_counts),
-            'source_coverage': len(source_names) / 2,
-            'reason': f"匹配度 {relevance_score:.2f}, 来源 {len(source_names)}/2"
-        }
+        return min(1.0, match_count / 3)
 
 
 def filter_books(books: List[Dict]) -> List[Dict]:
-    """批量过滤书籍（优化版）"""
+    """批量过滤书籍"""
     filter_engine = CategoryFilter()
     filtered = []
 
@@ -243,16 +193,20 @@ if __name__ == "__main__":
     filter_engine = CategoryFilter()
 
     test_cases = [
-        # 应该通过（即使分类不匹配，标题也匹配）
-        (["Personal finance"], "Barbarians at the Gate", True),
-        (["Business"], "Beating the Street", True),
-        (["Philosophy"], "Antifragile", True),
-        (["Biography"], "The Snowball", True),
-        # 应该排除
-        (["Fiction"], "Harry Potter", False),
-        (["Science Fiction"], "Dune", False),
+        # 应该通过（标题匹配）
+        ("The Bitcoin Standard", [], True),
+        ("Prospect Theory", [], True),
+        ("The Armchair Economist", [], True),
+        ("Money Illusion", [], True),
+        # 应该通过（分类匹配）
+        ("Some Book", ["Finance"], True),
+        ("Some Book", ["Economics"], True),
+        ("Some Book", ["Business"], True),
+        # 应该拒绝
+        ("Some Book", ["Fiction"], False),
+        ("Some Book", ["Science Fiction"], False),
     ]
 
-    for categories, title, expected in test_cases:
+    for title, categories, expected in test_cases:
         result = filter_engine.is_book_relevant(categories, title)
         print(f"{title} ({categories}) → {result} (期望: {expected})")
