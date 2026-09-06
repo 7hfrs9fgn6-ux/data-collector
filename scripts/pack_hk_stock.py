@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-港股数据打包模块（独立版 V2.0）
+港股数据打包模块（独立版）
 用途：从采集数据重新打包为统一格式
 使用：python scripts/pack_hk_stock.py
 """
@@ -34,13 +34,26 @@ def get_signing_key() -> str:
     return key
 
 
-def build_package(indices_data: list, trade_date: str = None) -> dict:
+def build_package(indices_data: list) -> dict:
     """构建统一格式的港股数据包"""
     now = datetime.now()
-    if trade_date is None:
-        trade_date = now.strftime("%Y-%m-%d")
+    trade_date = now.strftime("%Y-%m-%d")
     is_trading_day = len(indices_data) > 0 and any(d.get('price', 0) > 0 for d in indices_data)
     dst_active = False  # 港股不实行夏令时
+
+    # ★ 确保 indices_data 中每个项目都有必要字段
+    cleaned_indices = []
+    for item in indices_data:
+        cleaned_item = {
+            "name": item.get("name", "未知"),
+            "symbol": item.get("symbol", ""),
+            "price": item.get("price", 0),
+            "change_pct": item.get("change_pct", 0),
+            "volume": item.get("volume", 0),
+            "date": item.get("date", trade_date),
+            "source": item.get("source", "unknown"),
+        }
+        cleaned_indices.append(cleaned_item)
 
     package = {
         "book": "公开数据",
@@ -51,8 +64,8 @@ def build_package(indices_data: list, trade_date: str = None) -> dict:
         "is_trading_day": is_trading_day,
         "dst_active": dst_active,
         "content": {
-            "total": len(indices_data),
-            "indices": indices_data,
+            "total": len(cleaned_indices),
+            "indices": cleaned_indices,
         },
         "metadata": {
             "source": "yfinance + akshare",
@@ -74,7 +87,6 @@ def build_package(indices_data: list, trade_date: str = None) -> dict:
 
 def find_latest_raw() -> str:
     """找到最新的原始数据文件（排除 package 和 cache）"""
-    os.makedirs(STAGING_DIR, exist_ok=True)
     pattern = os.path.join(STAGING_DIR, "hk_stock_[0-9]*.json")
     files = glob.glob(pattern)
     files = [f for f in files if 'package' not in f and 'cache' not in f]
@@ -95,26 +107,7 @@ def main():
     else:
         raw_file = find_latest_raw()
 
-    # ★ 如果找不到原始文件，生成空包（避免工作流失败）
-    if not raw_file:
-        logger.warning("⚠️ 未找到原始数据文件，生成空包")
-
-        # 创建空的 package，但有完整的元数据
-        empty_package = build_package([], datetime.now().strftime("%Y-%m-%d"))
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filepath = os.path.join(STAGING_DIR, f"hk_stock_package_{timestamp}.json")
-
-        os.makedirs(STAGING_DIR, exist_ok=True)
-        # ★ 修复：save_json 签名是 (data, filepath)
-        save_json(empty_package, filepath)
-
-        logger.info(f"✅ 生成空包: {filepath}")
-        logger.info(f"   📊 指数数量: 0")
-        logger.info(f"   📅 trade_date: {empty_package.get('trade_date')}")
-        return 0
-
-    if not os.path.exists(raw_file):
+    if not raw_file or not os.path.exists(raw_file):
         logger.error(f"❌ 文件不存在: {raw_file}")
         return 1
 
@@ -122,29 +115,21 @@ def main():
 
     raw_data = load_json(raw_file)
     if raw_data is None:
-        logger.error("❌ 无法加载原始数据，生成空包")
-        empty_package = build_package([], datetime.now().strftime("%Y-%m-%d"))
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filepath = os.path.join(STAGING_DIR, f"hk_stock_package_{timestamp}.json")
-        os.makedirs(STAGING_DIR, exist_ok=True)
-        # ★ 修复：save_json 签名是 (data, filepath)
-        save_json(empty_package, filepath)
-        logger.info(f"✅ 生成空包: {filepath}")
-        return 0
+        logger.error("❌ 无法加载原始数据")
+        return 1
 
     indices_data = raw_data.get('items', [])
     if not indices_data:
         logger.warning("⚠️ 原始数据中没有指数项，将生成空包")
 
     # 打包
-    package = build_package(indices_data, raw_data.get('timestamp', datetime.now().strftime("%Y-%m-%d")))
+    package = build_package(indices_data)
 
-    # 保存
+    # ★ 保存：先 data，再 filepath（与 utils.py 签名一致）
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = os.path.join(STAGING_DIR, f"hk_stock_package_{timestamp}.json")
 
     os.makedirs(STAGING_DIR, exist_ok=True)
-    # ★ 修复：save_json 签名是 (data, filepath)
     save_json(package, filepath)
 
     logger.info(f"✅ 打包完成: {filepath}")
