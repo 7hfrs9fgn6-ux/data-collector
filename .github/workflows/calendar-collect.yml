@@ -1,14 +1,25 @@
-# data-collector 万年历采集工作流（知识库模式）
-# 采集：A股/港股/美股交易日、节假日、DST 信息
-# 策略：首次全量采集，后续仅增量补充缺失年份
-# 触发：每年1月1日执行 + 手动触发
+# data-collector 万年历采集工作流（知识库版）
+# 采集 A股/港股/美股 交易日、节假日、DST 信息
+# 策略：一次性采集 1990-2030 年，存入知识库记忆体
+# 触发：手动触发为主，每年 1 月 1 日自动增量（补上一年数据）
 
-name: 📅 万年历知识库采集
+name: 📅 万年历采集（知识库）
 
 on:
   schedule:
-    - cron: '0 0 1 1 *'              # 每年1月1日 00:00 执行
+    - cron: '0 0 1 1 *'              # 每年 1 月 1 日 00:00（增量更新）
   workflow_dispatch:                  # 支持手动触发
+    inputs:
+      start_year:
+        description: '起始年份'
+        required: false
+        default: '1990'
+        type: string
+      end_year:
+        description: '结束年份'
+        required: false
+        default: '2030'
+        type: string
 
 permissions:
   contents: read
@@ -22,7 +33,7 @@ jobs:
   collect-calendar:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    name: 📅 采集万年历知识库
+    name: 📅 采集万年历数据
 
     steps:
       - name: 📥 检出代码
@@ -38,48 +49,38 @@ jobs:
           python -m pip install --upgrade pip
           pip install akshare pandas requests pyyaml pytz
 
-      - name: 📁 创建知识库目录
-        run: mkdir -p knowledge_library/calendar/checkpoints
+      - name: 📁 创建暂存区目录
+        run: mkdir -p staging
 
-      - name: 📅 采集万年历数据（增量模式）
-        run: python scripts/collect_calendar.py
-        continue-on-error: true
-
-      - name: 📦 打包当日状态（供私密库快速查询）
-        run: python scripts/pack_calendar.py
-        continue-on-error: true
-
-      - name: 📋 打印知识库状态
+      - name: 📅 采集万年历数据
         run: |
-          echo "📂 知识库目录:"
-          ls -la knowledge_library/calendar/ || echo "   (目录不存在)"
-          echo ""
-          echo "📊 数据统计:"
-          if [ -f knowledge_library/calendar/calendar_knowledge.jsonl ]; then
-            echo "   - 条目数: $(wc -l < knowledge_library/calendar/calendar_knowledge.jsonl)"
-            echo "   - 文件大小: $(du -h knowledge_library/calendar/calendar_knowledge.jsonl | cut -f1)"
+          if [ -n "${{ inputs.start_year }}" ] && [ -n "${{ inputs.end_year }}" ]; then
+            python scripts/collect_calendar.py --start-year ${{ inputs.start_year }} --end-year ${{ inputs.end_year }}
           else
-            echo "   - 暂无数据"
+            python scripts/collect_calendar.py
           fi
-          echo ""
-          if [ -f knowledge_library/calendar/meta.json ]; then
-            echo "📋 元数据:"
-            cat knowledge_library/calendar/meta.json
-          else
-            echo "   - 暂无元数据"
-          fi
+        continue-on-error: true
 
-      - name: 📤 上传 Artifact（当日状态包）
+      - name: 📋 打印暂存区状态
+        run: |
+          echo "📦 万年历文件列表:"
+          ls -la staging/ | grep -E "calendar" || echo "   (暂无文件)"
+          echo ""
+          echo "📊 文件统计:"
+          echo "   - 原始文件: $(ls staging/ | grep -E 'calendar_raw_.*\.json' | wc -l)"
+          echo "   - 打包文件: $(ls staging/ | grep -E 'calendar_package_.*\.json' | wc -l)"
+
+      - name: 📤 上传 Artifact（万年历打包数据）
         uses: actions/upload-artifact@v4
         with:
-          name: calendar-status-data
-          path: staging/calendar_status_package_*.json
-          retention-days: 7
+          name: calendar-data
+          path: staging/calendar_package_*.json
+          retention-days: 30
 
       - name: ✅ 采集完成
         if: success()
         run: |
-          echo "✅ 万年历知识库采集完成"
-          echo "   📅 数据已写入: knowledge_library/calendar/"
-          echo "   📦 状态包已生成: staging/calendar_status_package_*.json"
-          echo "   🕐 下次自动执行: 明年1月1日 00:00"
+          echo "✅ 万年历采集完成"
+          echo "   📅 数据范围: 1990-2030（可增量更新）"
+          echo "   📦 数据包格式: 统一格式（含 trade_date/is_trading_day/dst_active）"
+          echo "   🏷️  类型: 知识库数据（静态知识）"
