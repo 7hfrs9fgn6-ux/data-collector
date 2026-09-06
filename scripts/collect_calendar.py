@@ -325,7 +325,7 @@ def append_year_to_knowledge(year_data: dict):
 def update_meta(existing_years: set):
     """
     更新元数据文件
-    注意：save_json 参数顺序为 (文件路径, 数据)
+    save_json 参数顺序：save_json(文件路径, 数据)
     """
     meta = {
         "data_type": "calendar",
@@ -337,7 +337,7 @@ def update_meta(existing_years: set):
         "schema_version": "1.0",
     }
 
-    # ✅ 修复：参数顺序为 (文件路径, 数据)
+    # ✅ 正确：文件路径在前，数据在后
     save_json(META_FILE, meta)
     print(f"📋 元数据已更新: {META_FILE}")
 
@@ -385,7 +385,6 @@ def main():
         # 尝试从 akshare 获取
         a_share_trading_days = fetch_trading_days_akshare(year)
 
-        # 如果 akshare 返回空，使用本地规则
         if not a_share_trading_days:
             print(f"⚠️ {year} 年 akshare 无数据，使用本地规则生成")
 
@@ -394,7 +393,7 @@ def main():
             append_year_to_knowledge(year_data)
             collected_count += 1
 
-            # 立即更新 meta（防止中途失败丢失进度）
+            # 立即更新 meta
             existing_years.add(year)
             update_meta(existing_years)
 
@@ -407,7 +406,6 @@ def main():
     print("📊 采集报告")
     print("=" * 60)
 
-    # 重新加载所有年份
     final_years = load_existing_years()
 
     print(f"   ✅ 成功采集: {collected_count} 年")
@@ -424,7 +422,6 @@ def main():
 
 
 if __name__ == "__main__":
-    # 导入 pandas 用于 akshare 数据处理
     try:
         import pandas as pd
     except ImportError:
