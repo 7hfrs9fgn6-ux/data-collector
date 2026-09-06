@@ -22,7 +22,7 @@ env:
 jobs:
   collect-hk-stock:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     name: 🇭🇰 采集港股指数
 
     steps:
