@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "书籍知识库 Schema",
+  "description": "公开库书籍知识库的数据格式定义",
+  "version": "1.0",
+  "definitions": {
+    "book": {
+      "type": "object",
+      "required": ["id", "title", "authors", "category"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "书籍唯一标识（格式: wiki_{wikipedia_id} 或 gbooks_{google_books_id}）"
+        },
+        "wikipedia_id": {
+          "type": "string",
+          "description": "维基百科条目 ID（去重主键）"
+        },
+        "google_books_id": {
+          "type": "string",
+          "description": "Google Books API ID"
+        },
+        "douban_id": {
+          "type": "string",
+          "description": "豆瓣图书 ID"
+        },
+        "title": {
+          "type": "string",
+          "description": "书名"
+        },
+        "title_cn": {
+          "type": "string",
+          "description": "中文书名"
+        },
+        "authors": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "作者列表"
+        },
+        "category": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "分类标签"
+        },
+        "description": {
+          "type": "string",
+          "description": "书籍简介"
+        },
+        "description_cn": {
+          "type": "string",
+          "description": "中文简介"
+        },
+        "quotes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "经典语录（来自维基语录）"
+        },
+        "cover_url": {
+          "type": "string",
+          "description": "封面图片 URL"
+        },
+        "publish_date": {
+          "type": "string",
+          "format": "date",
+          "description": "出版日期"
+        },
+        "publisher": {
+          "type": "string",
+          "description": "出版社"
+        },
+        "rating": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 10,
+          "description": "豆瓣评分"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["wikipedia", "wikiquote", "google_books", "douban"]
+          },
+          "description": "数据来源"
+        },
+        "collected_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "采集时间"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "pending", "failed"],
+          "default": "active",
+          "description": "采集状态"
+        }
+      }
+    },
+    "package": {
+      "type": "object",
+      "required": ["book", "chapter", "version", "generated_at", "trade_date", "content"],
+      "properties": {
+        "book": { "type": "string", "const": "公开数据" },
+        "chapter": { "type": "string", "const": "book_knowledge" },
+        "version": { "type": "string" },
+        "generated_at": { "type": "string", "format": "date-time" },
+        "trade_date": { "type": "string", "format": "date" },
+        "is_trading_day": { "type": "boolean" },
+        "dst_active": { "type": "boolean" },
+        "content": {
+          "type": "object",
+          "properties": {
+            "total": { "type": "integer" },
+            "books": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/book" }
+            },
+            "summary": {
+              "type": "object",
+              "properties": {
+                "new_books": { "type": "integer" },
+                "updated_books": { "type": "integer" },
+                "failed_books": { "type": "integer" },
+                "total_books": { "type": "integer" }
+              }
+            }
+          }
+        },
+        "metadata": {
+          "type": "object",
+          "properties": {
+            "source": { "type": "string" },
+            "collected_at": { "type": "string", "format": "date-time" },
+            "data_type": { "type": "string", "const": "book_knowledge" }
+          }
+        },
+        "signature": { "type": "string" }
+      }
+    }
+  }
+}
