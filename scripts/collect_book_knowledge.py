@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-书籍知识库主采集程序（V9：预检测 + 优化）
-策略：所有匹配标题的条目都入库，入库后分类存储
-新增：预检测页面存在性，避免无效请求
+书籍知识库主采集程序（V10：基于特征的书籍/知识条目分类）
+核心原则：明确特征 → 按优先级判定
+  1. 先判定是否为"书"（硬特征+软特征）
+  2. 再判定是否为"知识条目"（理论/概念/人物/术语/偏差/效应/模型）
+  3. 最后默认为"概念"
 """
 
 import os
@@ -41,7 +43,7 @@ ENTRY_DETAILS_DIR = os.path.join(KNOWLEDGE_LIBRARY_DIR, "knowledge_entries")
 
 
 class BookCollector:
-    """书籍/知识条目采集器（V9：预检测）"""
+    """书籍/知识条目采集器（V10：基于特征的分类）"""
 
     def __init__(self, max_items: int = 500, debug: bool = False):
         self.max_items = max_items
@@ -52,7 +54,6 @@ class BookCollector:
         self.failed_items = []
         self.category_filter = CategoryFilter()
         self.wiki_parser = WikipediaParser('en')
-        # ★ 缓存页面存在性检测结果
         self._page_exists_cache = {}
 
         os.makedirs(KNOWLEDGE_LIBRARY_DIR, exist_ok=True)
@@ -78,11 +79,10 @@ class BookCollector:
         save_json(checkpoint, CHECKPOINT_FILE)
 
     # ============================================================
-    # ★ 新增：页面存在性预检测
+    # ★ 页面存在性预检测
     # ============================================================
 
     def _page_exists(self, title: str) -> bool:
-        """快速检测维基百科页面是否存在（带缓存）"""
         if title in self._page_exists_cache:
             return self._page_exists_cache[title]
 
@@ -108,131 +108,163 @@ class BookCollector:
                     return True
             self._page_exists_cache[title] = False
             return False
-        except Exception as e:
-            # 无法检测时默认尝试采集
-            logger.debug(f"      ⚠️ 页面检测失败，默认尝试: {title} ({e})")
+        except Exception:
             self._page_exists_cache[title] = True
             return True
 
     # ============================================================
-    # ★ 核心：类型推断（基于实际数据）
+    # ★ 核心：基于特征的分类（V10 核心）
     # ============================================================
 
-    def _infer_type(self, wiki_data: Dict, title: str) -> str:
-        """根据 wiki_data 和标题推断类型"""
+    def _classify_entry(self, wiki_data: Dict, title: str) -> str:
+        """
+        基于特征判定条目类型
+        优先级：书 > 知识条目 > 概念
+        """
         if not wiki_data:
-            return 'concept'
+            return 'none'
 
-        # 1. 书籍判定
+        title_lower = title.lower()
+        categories = wiki_data.get('categories', [])
+        cat_text = ' '.join(categories).lower()
+
+        # ============================================================
+        # 第1步：判定是否为「书」（硬特征 + 软特征）
+        # ============================================================
+
+        # 1a. 硬特征：ISBN
         if wiki_data.get('isbn'):
             return 'book'
+
+        # 1b. 硬特征：Infobox book
         infobox = wiki_data.get('infobox', '')
         if infobox and 'Infobox book' in str(infobox):
             return 'book'
 
-        categories = wiki_data.get('categories', [])
-        cat_text = ' '.join(categories).lower()
-        title_lower = title.lower()
+        # 1c. 硬特征：有作者字段
+        if wiki_data.get('authors'):
+            return 'book'
 
-        # 分类含 book → 书
-        for keyword in ['book', 'books', 'novel', 'business book', 'finance book', 'economics book']:
-            if keyword in cat_text:
-                return 'book'
+        # 1d. 硬特征：有出版社字段
+        if wiki_data.get('publisher'):
+            return 'book'
 
-        # 2. 理论
-        if 'theory' in cat_text or 'theory' in title_lower:
+        # 1e. 软特征：标题后缀
+        if '(book)' in title_lower or '(novel)' in title_lower or '(memoir)' in title_lower:
+            return 'book'
+
+        # 1f. 软特征：分类中包含 "book"
+        if 'book' in cat_text:
+            return 'book'
+
+        # 1g. 软特征：分类中包含 "novel"
+        if 'novel' in cat_text:
+            return 'book'
+
+        # ============================================================
+        # 第2步：判定是否为「知识条目」
+        # ============================================================
+
+        # 2a. 理论
+        if 'theory' in title_lower or 'theory' in cat_text:
             return 'theory'
 
-        # 3. 人物
-        if any(k in cat_text for k in ['people', 'person', 'economists', 'biography']):
+        # 2b. 效应
+        if 'effect' in title_lower or 'effect' in cat_text:
+            return 'effect'
+
+        # 2c. 偏差
+        if 'bias' in title_lower or 'bias' in cat_text:
+            return 'bias'
+
+        # 2d. 模型
+        if 'model' in title_lower or 'model' in cat_text:
+            return 'model'
+
+        # 2e. 人物
+        if any(k in cat_text for k in ['people', 'economists', 'biography']):
             return 'person'
         if any(k in title_lower for k in ['buffett', 'munger', 'graham', 'kahneman', 'tversky', 'thaler', 'shiller']):
             return 'person'
 
-        # 4. 偏差
-        if 'bias' in cat_text or 'bias' in title_lower:
-            return 'bias'
-
-        # 5. 效应
-        if 'effect' in cat_text or 'effect' in title_lower:
-            return 'effect'
-
-        # 6. 模型
-        if any(k in cat_text for k in ['model', 'hypothesis']):
-            return 'model'
-        if 'model' in title_lower:
-            return 'model'
-
-        # 7. 术语
-        if any(k in cat_text for k in ['term', 'definition', 'glossary']):
+        # 2f. 术语
+        if any(k in title_lower for k in ['trap', 'rally', 'correction', 'sell-off', 'spread']):
             return 'term'
-        if any(k in title_lower for k in ['trap', 'rally', 'correction', 'sell-off']):
+        if 'term' in cat_text or 'definition' in cat_text:
             return 'term'
 
-        # 8. 默认：概念
+        # ============================================================
+        # 第3步：默认
+        # ============================================================
+
         return 'concept'
 
     # ============================================================
     # ★ 构建结果
     # ============================================================
 
-    def _build_result(self, wiki_data: Dict, title: str, entry_type: str, quotes: List[str] = None, douban_data: Dict = None) -> Dict:
-        """构建统一结果（根据类型返回不同结构）"""
-        if entry_type == 'book':
-            result = {
-                "id": f"wiki_{wiki_data.get('page_id', hashlib.md5(title.encode()).hexdigest()[:16])}",
-                "wikipedia_id": wiki_data.get('page_id', ''),
-                "title": wiki_data.get('title', title),
-                "title_cn": "",
-                "authors": [],
-                "authors_cn": [],
-                "categories": wiki_data.get('categories', []),
-                "description": wiki_data.get('description', ''),
-                "description_cn": "",
-                "quotes": quotes or [],
-                "cover_url": wiki_data.get('cover_url', ''),
-                "url": wiki_data.get('url', ''),
-                "publisher": "",
-                "publish_date": "",
-                "rating": 0,
-                "sources": ["wikipedia"],
-                "type": "book",
-                "collected_at": datetime.now().isoformat(),
-                "status": "active"
-            }
-        else:
-            result = {
-                "id": f"entry_{hashlib.md5(title.encode()).hexdigest()[:16]}",
-                "type": entry_type,
-                "title": wiki_data.get('title', title) if wiki_data else title,
-                "title_cn": "",
-                "categories": wiki_data.get('categories', []) if wiki_data else [],
-                "description": wiki_data.get('description', '') if wiki_data else '',
-                "description_cn": "",
-                "url": wiki_data.get('url', '') if wiki_data else '',
-                "cover_url": wiki_data.get('cover_url', '') if wiki_data else '',
-                "sources": ["wikipedia"] if wiki_data else ["wikipedia_fallback"],
-                "collected_at": datetime.now().isoformat(),
-                "status": "active"
-            }
+    def _build_book_result(self, wiki_data: Dict, title: str, quotes: List[str] = None, douban_data: Dict = None) -> Dict:
+        """构建书籍结果"""
+        result = {
+            "id": f"wiki_{wiki_data.get('page_id', hashlib.md5(title.encode()).hexdigest()[:16])}",
+            "wikipedia_id": wiki_data.get('page_id', ''),
+            "title": wiki_data.get('title', title),
+            "title_cn": "",
+            "authors": wiki_data.get('authors', []),
+            "authors_cn": [],
+            "categories": wiki_data.get('categories', []),
+            "description": wiki_data.get('description', ''),
+            "description_cn": "",
+            "quotes": quotes or [],
+            "cover_url": wiki_data.get('cover_url', ''),
+            "url": wiki_data.get('url', ''),
+            "publisher": wiki_data.get('publisher', ''),
+            "publish_date": "",
+            "rating": 0,
+            "sources": ["wikipedia"],
+            "type": "book",
+            "collected_at": datetime.now().isoformat(),
+            "status": "active"
+        }
 
         if douban_data:
             result["title_cn"] = douban_data.get("title_cn", result.get("title_cn", ''))
-            if entry_type == 'book':
-                result["authors_cn"] = douban_data.get("authors_cn", [])
-                result["rating"] = douban_data.get("rating", 0)
-                result["publisher"] = douban_data.get("publisher", '')
-                result["douban_id"] = douban_data.get("douban_id", '')
-            else:
-                result["description_cn"] = douban_data.get("description_cn", '')
-            if "wikipedia" not in result["sources"]:
-                result["sources"].append("douban")
+            result["authors_cn"] = douban_data.get("authors_cn", [])
+            result["description_cn"] = douban_data.get("description_cn", '')
+            result["rating"] = douban_data.get("rating", 0)
+            result["publisher"] = douban_data.get("publisher", result.get("publisher", ''))
+            result["douban_id"] = douban_data.get("douban_id", '')
+            result["sources"].append("douban")
+
+        return result
+
+    def _build_entry_result(self, wiki_data: Dict, title: str, entry_type: str, douban_data: Dict = None) -> Dict:
+        """构建知识条目结果"""
+        result = {
+            "id": f"entry_{hashlib.md5(title.encode()).hexdigest()[:16]}",
+            "type": entry_type,
+            "title": wiki_data.get('title', title) if wiki_data else title,
+            "title_cn": "",
+            "categories": wiki_data.get('categories', []) if wiki_data else [],
+            "description": wiki_data.get('description', '') if wiki_data else '',
+            "description_cn": "",
+            "url": wiki_data.get('url', '') if wiki_data else '',
+            "cover_url": wiki_data.get('cover_url', '') if wiki_data else '',
+            "sources": ["wikipedia"] if wiki_data else ["wikipedia_fallback"],
+            "collected_at": datetime.now().isoformat(),
+            "status": "active"
+        }
+
+        if douban_data:
+            result["title_cn"] = douban_data.get("title_cn", result.get("title_cn", ''))
+            result["description_cn"] = douban_data.get("description_cn", '')
+            result["sources"].append("douban")
 
         return result
 
     def _build_minimal_result(self, title: str, douban_data: Dict = None) -> Dict:
         """构建最小结果（无 wiki_data 时使用）"""
-        entry_type = 'concept'
+        # 根据标题推断类型
         title_lower = title.lower()
         if any(k in title_lower for k in ['theory']):
             entry_type = 'theory'
@@ -246,6 +278,8 @@ class BookCollector:
             entry_type = 'term'
         elif any(k in title_lower for k in ['buffett', 'munger', 'graham', 'kahneman', 'tversky', 'thaler', 'shiller']):
             entry_type = 'person'
+        else:
+            entry_type = 'concept'
 
         result = {
             "id": f"entry_{hashlib.md5(title.encode()).hexdigest()[:16]}",
@@ -270,25 +304,21 @@ class BookCollector:
         return result
 
     # ============================================================
-    # ★ 核心采集逻辑（V9：预检测）
+    # ★ 核心采集逻辑
     # ============================================================
 
     def _collect_single_item(self, candidate: Dict) -> Optional[Dict]:
-        """
-        采集单个条目（V9：最大化采集 + 预检测）
-        原则：所有匹配标题的条目都入库，不丢弃
-        """
+        """采集单个条目（V10：基于特征分类）"""
         title = candidate.get('title', '')
 
         if not self.category_filter.is_finance_title(title):
-            logger.debug(f"      ⛔ 非金融: {title}")
             return None
 
-        # ★ 预检测：页面是否存在（快速检测，避免无效请求）
+        # ★ 预检测：页面是否存在
         if not self._page_exists(title):
-            logger.debug(f"      ⛔ 页面不存在: {title}")
             return None
 
+        # ★ 获取 wiki_data
         wiki_data = None
         for retry in range(3):
             try:
@@ -299,22 +329,35 @@ class BookCollector:
             except Exception:
                 time.sleep(1)
 
+        # ★ 获取豆瓣信息
         douban_data = get_douban_info(title)
 
+        # ★ 获取语录（如果有 wiki_data）
         quotes = []
         if wiki_data:
             quotes = get_quotes_for_book(title)
 
-        entry_type = self._infer_type(wiki_data, title) if wiki_data else 'concept'
-
+        # ★ 分类（核心：基于特征）
         if wiki_data:
-            result = self._build_result(wiki_data, title, entry_type, quotes, douban_data)
+            entry_type = self._classify_entry(wiki_data, title)
         else:
-            result = self._build_minimal_result(title, douban_data)
+            entry_type = 'concept'
 
-        result['_inferred_type'] = entry_type
-
-        return result
+        # ★ 构建结果
+        if entry_type == 'book':
+            if wiki_data:
+                result = self._build_book_result(wiki_data, title, quotes, douban_data)
+            else:
+                # 即使没有 wiki_data，但标题明显是书，也保留
+                result = self._build_minimal_result(title, douban_data)
+                result['type'] = 'book'
+            return result
+        else:
+            if wiki_data:
+                result = self._build_entry_result(wiki_data, title, entry_type, douban_data)
+            else:
+                result = self._build_minimal_result(title, douban_data)
+            return result
 
     # ============================================================
     # 主流程
@@ -322,7 +365,7 @@ class BookCollector:
 
     def collect(self) -> Dict[str, Any]:
         logger.info("=" * 60)
-        logger.info("📚 书籍/知识库采集启动（V9：预检测优化）")
+        logger.info("📚 书籍/知识库采集启动（V10：基于特征分类）")
         logger.info("=" * 60)
 
         seed_file = os.path.join(KNOWLEDGE_LIBRARY_DIR, "seed_sources.json")
@@ -343,7 +386,7 @@ class BookCollector:
         book_deduper = DedupChecker(BOOK_INDEX_FILE)
         entry_deduper = DedupChecker(ENTRY_INDEX_FILE)
 
-        logger.info("📖 阶段 3: 采集条目详情（最大化采集）...")
+        logger.info("📖 阶段 3: 采集条目详情...")
 
         max_to_collect = min(self.max_items, len(candidates))
         candidates_to_process = candidates[:max_to_collect]
@@ -361,7 +404,6 @@ class BookCollector:
 
             if item_data:
                 entry_type = item_data.get('type', 'concept')
-                item_data.pop('_inferred_type', None)
 
                 if entry_type == 'book':
                     is_dup, reason = book_deduper.is_duplicate(item_data)
@@ -468,7 +510,7 @@ class BookCollector:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='书籍/知识库采集（V9：预检测优化）')
+    parser = argparse.ArgumentParser(description='书籍/知识库采集（V10：基于特征分类）')
     parser.add_argument('--max', type=int, default=300, help='最大采集数量')
     parser.add_argument('--debug', action='store_true', help='调试模式')
     args = parser.parse_args()
