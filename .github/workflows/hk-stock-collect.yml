@@ -8,7 +8,7 @@ name: 🇭🇰 港股指数采集
 
 on:
   schedule:
-    - cron: '0 17 * * *'              # 每日 17:00 执行
+    - cron: '0 17 * * *'              # 每日 17:00 执行（港股收盘后）
   workflow_dispatch:                  # 支持手动触发
 
 permissions:
@@ -46,14 +46,18 @@ jobs:
         run: python scripts/collect_hk_stock.py
         continue-on-error: true
 
+      - name: 📦 打包港股数据（统一格式）
+        run: python scripts/pack_hk_stock.py
+        continue-on-error: true
+
       - name: 📋 打印暂存区状态
         run: |
           echo "📦 港股数据文件列表:"
           ls -la staging/ | grep -E "hk_stock" || echo "   (暂无文件)"
           echo ""
           echo "📊 文件统计:"
-          echo "   - 采集文件: $(ls staging/ | grep -E 'hk_stock_[0-9]{8}_[0-9]{6}\.json' | wc -l)"
-          echo "   - 打包文件: $(ls staging/ | grep -E 'hk_stock_package_.*\.json' | wc -l)"
+          echo "   - 采集文件: $(ls staging/ 2>/dev/null | grep -E 'hk_stock_[0-9]{8}_[0-9]{6}\.json' | wc -l)"
+          echo "   - 打包文件: $(ls staging/ 2>/dev/null | grep -E 'hk_stock_package_.*\.json' | wc -l)"
 
       - name: 📤 上传 Artifact（港股打包数据）
         uses: actions/upload-artifact@v4
