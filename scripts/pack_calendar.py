@@ -2,11 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 万年历数据打包模块（知识库模式）
-
-注意：此模块不再生成每日数据包，而是从知识库中提取当前日期信息
-生成一个轻量级的"当前日期状态包"，供私密库快速查询当日是否交易日
-
-输出：staging/calendar_status_package_*.json（轻量级，约 1KB）
 """
 
 import json
@@ -31,7 +26,6 @@ BOOK_NAME = "公开数据"
 CHAPTER_NAME = "calendar_status"
 VERSION = "2.0"
 
-# 从环境变量获取签名密钥
 SIGNING_KEY = os.environ.get("SIGNING_KEY", "")
 
 
@@ -49,7 +43,6 @@ def find_date_in_knowledge(date_str: str, year: int) -> dict:
                 try:
                     year_data = json.loads(line)
                     if year_data.get("year") == year:
-                        # 查找该日期
                         for day in year_data.get("days", []):
                             if day.get("date") == date_str:
                                 return day
@@ -61,17 +54,54 @@ def find_date_in_knowledge(date_str: str, year: int) -> dict:
     return None
 
 
+def load_meta_info() -> dict:
+    """加载元数据信息，如果不存在则从 JSONL 中提取"""
+    meta = {}
+
+    # 优先读取 meta.json
+    if os.path.exists(META_FILE):
+        try:
+            meta = load_json(META_FILE)
+            return meta
+        except Exception as e:
+            print(f"⚠️ 读取 meta.json 失败: {e}")
+
+    # 降级：从 JSONL 文件中提取年份
+    if os.path.exists(CALENDAR_FILE):
+        years = []
+        try:
+            with open(CALENDAR_FILE, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            data = json.loads(line)
+                            if "year" in data:
+                                years.append(data["year"])
+                        except:
+                            continue
+            if years:
+                meta = {
+                    "total_years": len(years),
+                    "years": sorted(years),
+                    "last_updated": get_timestamp(),
+                }
+                print(f"📊 从 JSONL 提取年份信息: {len(years)} 年")
+        except Exception as e:
+            print(f"⚠️ 读取 JSONL 失败: {e}")
+
+    return meta
+
+
 def get_current_date_status() -> dict:
     """获取当前日期的状态信息"""
     now = datetime.now()
     date_str = now.strftime("%Y-%m-%d")
     year = now.year
 
-    # 从知识库查找
     day_info = find_date_in_knowledge(date_str, year)
 
     if day_info is None:
-        # 降级：返回基于规则判断
         is_weekend = now.weekday() >= 5
         return {
             "date": date_str,
@@ -100,13 +130,10 @@ def main():
     print("📦 万年历状态打包（知识库模式）")
     print("=" * 60)
 
-    # 确保 staging 目录存在
     os.makedirs("staging", exist_ok=True)
 
-    # 检查签名密钥
     if not SIGNING_KEY:
-        print("⚠️ 警告: SIGNING_KEY 环境变量未设置，签名将失败")
-        print("   请在 GitHub Secrets 中配置 SIGNING_KEY")
+        print("⚠️ 警告: SIGNING_KEY 环境变量未设置")
 
     # 1. 获取当前日期状态
     status = get_current_date_status()
@@ -118,13 +145,12 @@ def main():
     if status.get('holiday_name'):
         print(f"   🎉 节假日: {status['holiday_name']}")
 
-    # 2. 读取 meta 信息（年份范围等）
-    meta = {}
-    if os.path.exists(META_FILE):
-        try:
-            meta = load_json(META_FILE)
-        except:
-            pass
+    # 2. 加载 meta 信息
+    meta = load_meta_info()
+    years_range = ""
+    if meta.get("years"):
+        years_list = meta.get("years", [])
+        years_range = f"{years_list[0]} ~ {years_list[-1]}" if years_list else "N/A"
 
     # 3. 构建数据包
     package = {
@@ -144,17 +170,16 @@ def main():
             "source": status.get("source", ""),
             "knowledge_summary": {
                 "total_years": meta.get("total_years", 0),
-                "years_range": f"{meta.get('years', ['N/A'])[0] if meta.get('years') else 'N/A'} ~ {meta.get('years', ['N/A'])[-1] if meta.get('years') else 'N/A'}",
+                "years_range": years_range,
                 "last_updated": meta.get("last_updated", ""),
             }
         },
     }
 
-    # 4. 签名（传入密钥）
+    # 4. 签名
     if SIGNING_KEY:
         signed_package = sign_data(package, SIGNING_KEY)
     else:
-        # 无密钥时，直接保存未签名版本（用于本地测试）
         signed_package = package
         print("⚠️ 未签名（SIGNING_KEY 未设置）")
 
@@ -162,6 +187,7 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     package_file = f"staging/calendar_status_package_{timestamp}.json"
 
+    # ✅ 正确：文件路径在前，数据在后
     save_json(package_file, signed_package)
     print(f"\n✅ 状态包已保存: {package_file}")
 
