@@ -31,7 +31,7 @@ KNOWLEDGE_LIBRARY_DIR = "knowledge_library"
 CALENDAR_DIR = os.path.join(KNOWLEDGE_LIBRARY_DIR, "calendar")
 CALENDAR_FILE = os.path.join(CALENDAR_DIR, "calendar_knowledge.jsonl")
 META_FILE = os.path.join(CALENDAR_DIR, "meta.json")
-CHECKPOINT_FILE = os.path.join(CALENDAR_DIR, "checkpoints", "collection_state.json")
+CHECKPOINT_DIR = os.path.join(CALENDAR_DIR, "checkpoints")
 
 # 默认采集年份范围
 DEFAULT_START_YEAR = 1990
@@ -303,7 +303,7 @@ def load_existing_years() -> set:
                             existing_years.add(data["year"])
                     except json.JSONDecodeError:
                         continue
-        print(f"📂 已加载 {len(existing_years)} 个已采集年份: {sorted(existing_years)}")
+        print(f"📂 已加载 {len(existing_years)} 个已采集年份")
     except Exception as e:
         print(f"⚠️ 读取已有数据失败: {e}")
 
@@ -314,7 +314,7 @@ def append_year_to_knowledge(year_data: dict):
     """追加一年数据到 JSONL 文件"""
     # 确保目录存在
     os.makedirs(CALENDAR_DIR, exist_ok=True)
-    os.makedirs(os.path.join(CALENDAR_DIR, "checkpoints"), exist_ok=True)
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
     with open(CALENDAR_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(year_data, ensure_ascii=False) + "\n")
@@ -323,7 +323,10 @@ def append_year_to_knowledge(year_data: dict):
 
 
 def update_meta(existing_years: set):
-    """更新元数据文件"""
+    """
+    更新元数据文件
+    注意：save_json 参数顺序为 (文件路径, 数据)
+    """
     meta = {
         "data_type": "calendar",
         "description": "A股/港股/美股 交易日、节假日、DST 信息",
@@ -334,6 +337,7 @@ def update_meta(existing_years: set):
         "schema_version": "1.0",
     }
 
+    # ✅ 修复：参数顺序为 (文件路径, 数据)
     save_json(META_FILE, meta)
     print(f"📋 元数据已更新: {META_FILE}")
 
@@ -384,9 +388,6 @@ def main():
         # 如果 akshare 返回空，使用本地规则
         if not a_share_trading_days:
             print(f"⚠️ {year} 年 akshare 无数据，使用本地规则生成")
-            # 本地规则：周末 + 节假日判断（不依赖 akshare）
-            # 这里直接调用 generate_year_calendar 时不传 a_share_trading_days
-            # 它会使用降级逻辑（本地节假日库）
 
         try:
             year_data = generate_year_calendar(year, a_share_trading_days)
