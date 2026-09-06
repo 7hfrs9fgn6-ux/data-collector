@@ -15,6 +15,7 @@
   - 2026-09-06：分类匹配宽松化（标题关键词 + 分类匹配双重判断）
   - 2026-09-06：采集失败时降级为基础条目
   - 2026-09-06：增加重试机制
+  - 2026-09-06：修复 hashlib 导入作用域问题
 """
 
 import os
@@ -23,6 +24,7 @@ import json
 import time
 import argparse
 import logging
+import hashlib  # ★ 修复：在顶部全局导入
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
@@ -242,11 +244,10 @@ class BookCollector:
         if not result["sources"] and not wiki_data:
             return None
 
-        # 生成 ID（如果没有）
+        # ★ 确保有 ID（已在上面的逻辑中生成）
         if not result.get("id"):
-            import hashlib
-            hash_str = f"{title}_{'|'.join(result.get('authors', []))}"
-            result["id"] = f"book_{hashlib.md5(hash_str.encode()).hexdigest()[:16]}"
+            # 兜底：用 title 生成 ID
+            result["id"] = f"book_{hashlib.md5(title.encode()).hexdigest()[:16]}"
 
         # 清理分类
         result["categories"] = list(set(result["categories"]))
@@ -421,5 +422,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import hashlib
     sys.exit(main())
