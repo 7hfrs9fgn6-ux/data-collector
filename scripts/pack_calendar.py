@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 万年历数据打包模块（知识库模式）
-将采集的数据打包为统一格式数据包，供私密库拉取
 
 注意：此模块不再生成每日数据包，而是从知识库中提取当前日期信息
 生成一个轻量级的"当前日期状态包"，供私密库快速查询当日是否交易日
@@ -31,6 +30,9 @@ META_FILE = os.path.join(CALENDAR_DIR, "meta.json")
 BOOK_NAME = "公开数据"
 CHAPTER_NAME = "calendar_status"
 VERSION = "2.0"
+
+# 从环境变量获取签名密钥
+SIGNING_KEY = os.environ.get("SIGNING_KEY", "")
 
 
 def find_date_in_knowledge(date_str: str, year: int) -> dict:
@@ -101,6 +103,11 @@ def main():
     # 确保 staging 目录存在
     os.makedirs("staging", exist_ok=True)
 
+    # 检查签名密钥
+    if not SIGNING_KEY:
+        print("⚠️ 警告: SIGNING_KEY 环境变量未设置，签名将失败")
+        print("   请在 GitHub Secrets 中配置 SIGNING_KEY")
+
     # 1. 获取当前日期状态
     status = get_current_date_status()
 
@@ -143,8 +150,13 @@ def main():
         },
     }
 
-    # 4. 签名
-    signed_package = sign_data(package)
+    # 4. 签名（传入密钥）
+    if SIGNING_KEY:
+        signed_package = sign_data(package, SIGNING_KEY)
+    else:
+        # 无密钥时，直接保存未签名版本（用于本地测试）
+        signed_package = package
+        print("⚠️ 未签名（SIGNING_KEY 未设置）")
 
     # 5. 保存打包文件
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
