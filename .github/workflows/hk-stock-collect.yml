@@ -1,6 +1,7 @@
 # data-collector 港股指数采集工作流
 # 采集：恒生指数、恒生科技指数、国企指数
 # 频率：每日 17:00（港股 16:00 收盘后）
+# 数据源：yfinance → akshare → 缓存
 # 输出：hk_stock_package_*.json（统一格式数据包）
 
 name: 🇭🇰 港股指数采集
@@ -36,7 +37,7 @@ jobs:
       - name: 📦 安装依赖
         run: |
           python -m pip install --upgrade pip
-          pip install akshare pandas requests pyyaml pytz
+          pip install akshare pandas requests pyyaml pytz yfinance
 
       - name: 📁 创建暂存区目录
         run: mkdir -p staging
@@ -51,7 +52,7 @@ jobs:
           ls -la staging/ | grep -E "hk_stock" || echo "   (暂无文件)"
           echo ""
           echo "📊 文件统计:"
-          echo "   - 原始文件: $(ls staging/ | grep -E 'hk_stock_raw_.*\.json' | wc -l)"
+          echo "   - 采集文件: $(ls staging/ | grep -E 'hk_stock_[0-9]{8}_[0-9]{6}\.json' | wc -l)"
           echo "   - 打包文件: $(ls staging/ | grep -E 'hk_stock_package_.*\.json' | wc -l)"
 
       - name: 📤 上传 Artifact（港股打包数据）
@@ -68,3 +69,4 @@ jobs:
           echo "   🇭🇰 包含: 恒生指数、恒生科技、国企指数"
           echo "   🕐 采集时间: 17:00（港股已收盘）"
           echo "   📦 数据包格式: 统一格式（含 trade_date/is_trading_day）"
+          echo "   📡 数据源: yfinance → akshare → 缓存"
