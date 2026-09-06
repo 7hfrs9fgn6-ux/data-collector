@@ -1,8 +1,8 @@
 {
-  "version": "3.0",
-  "description": "书籍知识库书单源配置（扩展版 V3）",
+  "version": "2.0",
+  "description": "书籍知识库书单源配置（15 分类版本）",
   "last_updated": "2026-09-06",
-  "total_sources": 17,
+  "total_sources": 15,
   "sources": [
     {
       "id": "wikipedia_business_books",
@@ -123,22 +123,6 @@
       "type": "wikipedia_category",
       "language": "en",
       "enabled": true
-    },
-    {
-      "id": "wikipedia_macroeconomics",
-      "name": "维基百科-宏观经济学",
-      "url": "https://en.wikipedia.org/wiki/Category:Macroeconomics",
-      "type": "wikipedia_category",
-      "language": "en",
-      "enabled": true
-    },
-    {
-      "id": "wikipedia_microeconomics",
-      "name": "维基百科-微观经济学",
-      "url": "https://en.wikipedia.org/wiki/Category:Microeconomics",
-      "type": "wikipedia_category",
-      "language": "en",
-      "enabled": true
     }
   ],
   "allowed_categories": [
@@ -165,11 +149,7 @@
     "business_history",
     "accounting",
     "financial_economics",
-    "investment_management",
-    "macroeconomics",
-    "microeconomics",
-    "monetary_economics",
-    "international_economics"
+    "investment_management"
   ],
   "excluded_keywords": [
     "fiction",
