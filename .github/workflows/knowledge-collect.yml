@@ -1,0 +1,92 @@
+# data-collector 书籍知识库采集工作流
+# 采集：金融/投资/商业/心理学/思维类书籍
+# 数据源：维基百科 + Google Books API + 豆瓣 + 维基语录
+# 频率：每周日凌晨 02:00（手动触发）
+# 输出：book_knowledge_package_*.json（统一格式数据包）
+
+name: 📚 书籍知识库采集
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'              # 每周日 02:00 执行
+  workflow_dispatch:                  # 支持手动触发
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  TZ: Asia/Shanghai
+  SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+  GOOGLE_BOOKS_API_KEY: ${{ secrets.GOOGLE_BOOKS_API_KEY }}
+
+jobs:
+  collect-book-knowledge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    name: 📚 采集书籍知识库
+
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+
+      - name: 🐍 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 📦 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 lxml pyyaml pytz
+
+      - name: 📁 创建目录
+        run: |
+          mkdir -p staging
+          mkdir -p knowledge_library/book_details
+
+      - name: 📚 采集书籍知识库
+        run: |
+          if [ -n "${{ inputs.max_books }}" ]; then
+            python scripts/collect_book_knowledge.py --max ${{ inputs.max_books }}
+          else
+            python scripts/collect_book_knowledge.py --max 300
+          fi
+        continue-on-error: true
+
+      - name: 📋 打印暂存区状态
+        run: |
+          echo "📦 书籍知识库文件列表:"
+          ls -la staging/ | grep -E "book_knowledge" || echo "   (暂无文件)"
+          echo ""
+          echo "📊 文件统计:"
+          echo "   - 打包文件: $(ls staging/ 2>/dev/null | grep -E 'book_knowledge_package_.*\.json' | wc -l)"
+          echo ""
+          echo "📚 索引统计:"
+          if [ -f "knowledge_library/books_index.jsonl" ]; then
+            echo "   - 索引书籍数: $(cat knowledge_library/books_index.jsonl 2>/dev/null | wc -l)"
+          else
+            echo "   - 索引文件不存在"
+          fi
+
+      - name: 📤 上传 Artifact（书籍知识库打包数据）
+        uses: actions/upload-artifact@v4
+        with:
+          name: book-knowledge-data
+          path: staging/book_knowledge_package_*.json
+          retention-days: 30
+
+      - name: 📤 上传索引文件（持久存储）
+        uses: actions/upload-artifact@v4
+        with:
+          name: book-knowledge-index
+          path: knowledge_library/books_index.jsonl
+          retention-days: 90
+
+      - name: ✅ 采集完成
+        if: success()
+        run: |
+          echo "✅ 书籍知识库采集完成"
+          echo "   📚 数据源: 维基百科 + Google Books + 豆瓣 + 维基语录"
+          echo "   📅 采集频率: 每周日 02:00"
+          echo "   📦 数据包格式: 统一格式（含 trade_date）"
