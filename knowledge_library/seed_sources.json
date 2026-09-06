@@ -1,8 +1,8 @@
 {
-  "version": "2.0",
-  "description": "书籍知识库书单源配置（扩展版 V2）",
+  "version": "3.0",
+  "description": "书籍知识库书单源配置（扩展版 V3）",
   "last_updated": "2026-09-06",
-  "total_sources": 15,
+  "total_sources": 17,
   "sources": [
     {
       "id": "wikipedia_business_books",
@@ -10,8 +10,7 @@
       "url": "https://en.wikipedia.org/wiki/Category:Business_books",
       "type": "wikipedia_category",
       "language": "en",
-      "enabled": true,
-      "expected_count": 80
+      "enabled": true
     },
     {
       "id": "wikipedia_finance_books",
@@ -19,8 +18,7 @@
       "url": "https://en.wikipedia.org/wiki/Category:Finance_books",
       "type": "wikipedia_category",
       "language": "en",
-      "enabled": true,
-      "expected_count": 42
+      "enabled": true
     },
     {
       "id": "wikipedia_economics_books",
@@ -28,8 +26,7 @@
       "url": "https://en.wikipedia.org/wiki/Category:Economics_books",
       "type": "wikipedia_category",
       "language": "en",
-      "enabled": true,
-      "expected_count": 103
+      "enabled": true
     },
     {
       "id": "wikipedia_behavioral_finance",
@@ -37,8 +34,7 @@
       "url": "https://en.wikipedia.org/wiki/Category:Behavioral_finance",
       "type": "wikipedia_category",
       "language": "en",
-      "enabled": true,
-      "expected_count": 70
+      "enabled": true
     },
     {
       "id": "wikipedia_financial_economics",
@@ -46,8 +42,7 @@
       "url": "https://en.wikipedia.org/wiki/Category:Financial_economics",
       "type": "wikipedia_category",
       "language": "en",
-      "enabled": true,
-      "expected_count": 50
+      "enabled": true
     },
     {
       "id": "wikipedia_corporate_finance",
@@ -55,8 +50,7 @@
       "url": "https://en.wikipedia.org/wiki/Category:Corporate_finance",
       "type": "wikipedia_category",
       "language": "en",
-      "enabled": true,
-      "expected_count": 40
+      "enabled": true
     },
     {
       "id": "wikipedia_personal_finance",
@@ -64,8 +58,7 @@
       "url": "https://en.wikipedia.org/wiki/Category:Personal_finance",
       "type": "wikipedia_category",
       "language": "en",
-      "enabled": true,
-      "expected_count": 35
+      "enabled": true
     },
     {
       "id": "wikipedia_economic_history",
@@ -73,8 +66,7 @@
       "url": "https://en.wikipedia.org/wiki/Category:Economic_history",
       "type": "wikipedia_category",
       "language": "en",
-      "enabled": true,
-      "expected_count": 45
+      "enabled": true
     },
     {
       "id": "wikipedia_investment_management",
@@ -82,8 +74,7 @@
       "url": "https://en.wikipedia.org/wiki/Category:Investment_management",
       "type": "wikipedia_category",
       "language": "en",
-      "enabled": true,
-      "expected_count": 30
+      "enabled": true
     },
     {
       "id": "wikipedia_decision_theory",
@@ -91,8 +82,7 @@
       "url": "https://en.wikipedia.org/wiki/Category:Decision_theory",
       "type": "wikipedia_category",
       "language": "en",
-      "enabled": true,
-      "expected_count": 35
+      "enabled": true
     },
     {
       "id": "wikipedia_risk_management",
@@ -100,8 +90,7 @@
       "url": "https://en.wikipedia.org/wiki/Category:Risk_management",
       "type": "wikipedia_category",
       "language": "en",
-      "enabled": true,
-      "expected_count": 30
+      "enabled": true
     },
     {
       "id": "wikipedia_financial_markets",
@@ -109,8 +98,7 @@
       "url": "https://en.wikipedia.org/wiki/Category:Financial_markets",
       "type": "wikipedia_category",
       "language": "en",
-      "enabled": true,
-      "expected_count": 35
+      "enabled": true
     },
     {
       "id": "wikipedia_management_books",
@@ -118,8 +106,7 @@
       "url": "https://en.wikipedia.org/wiki/Category:Management_books",
       "type": "wikipedia_category",
       "language": "en",
-      "enabled": true,
-      "expected_count": 60
+      "enabled": true
     },
     {
       "id": "wikipedia_behavioral_economics",
@@ -127,8 +114,7 @@
       "url": "https://en.wikipedia.org/wiki/Category:Behavioral_economics",
       "type": "wikipedia_category",
       "language": "en",
-      "enabled": true,
-      "expected_count": 45
+      "enabled": true
     },
     {
       "id": "wikipedia_accounting",
@@ -136,8 +122,23 @@
       "url": "https://en.wikipedia.org/wiki/Category:Accounting",
       "type": "wikipedia_category",
       "language": "en",
-      "enabled": true,
-      "expected_count": 30
+      "enabled": true
+    },
+    {
+      "id": "wikipedia_macroeconomics",
+      "name": "维基百科-宏观经济学",
+      "url": "https://en.wikipedia.org/wiki/Category:Macroeconomics",
+      "type": "wikipedia_category",
+      "language": "en",
+      "enabled": true
+    },
+    {
+      "id": "wikipedia_microeconomics",
+      "name": "维基百科-微观经济学",
+      "url": "https://en.wikipedia.org/wiki/Category:Microeconomics",
+      "type": "wikipedia_category",
+      "language": "en",
+      "enabled": true
     }
   ],
   "allowed_categories": [
@@ -164,7 +165,11 @@
     "business_history",
     "accounting",
     "financial_economics",
-    "investment_management"
+    "investment_management",
+    "macroeconomics",
+    "microeconomics",
+    "monetary_economics",
+    "international_economics"
   ],
   "excluded_keywords": [
     "fiction",
