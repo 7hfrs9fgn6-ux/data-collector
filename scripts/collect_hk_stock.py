@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-港股指数采集模块V2.0
+港股指数采集模块（公开库）
 采集：恒生指数、恒生国企指数、恒生科技指数
 频率：每日 17:00（港股 16:00 收盘后）
+数据源：
+  - 恒生指数、国企指数：yfinance → akshare → 缓存
+  - 恒生科技指数：akshare（yfinance 不支持该指数）
 """
 
 import sys
@@ -41,12 +44,6 @@ class HKStockCollector:
         "^HSCE": "恒生国企指数",
     }
 
-    # ★ 需要从 akshare 采集的指数（yfinance 不支持）
-    # ★ 匹配关键词优先级从高到低
-    AK_TARGETS = [
-        {"symbol": "HSTECH", "name": "恒生科技指数", "keywords": ["恒生科技", "科技指数", "HSTECH", "HSIT"]},
-    ]
-
     def __init__(self):
         self.config = load_config()
 
@@ -69,9 +66,15 @@ class HKStockCollector:
             result["items"].extend(ak_data)
             logger.info(f"   ✅ 恒生科技指数: {ak_data[0].get('price', 0)} [akshare]")
         else:
-            logger.warning("   ⚠️ 恒生科技指数: akshare 采集失败")
+            # ★ 恒生科技采集失败时，尝试从缓存恢复
+            cache_tech = self._fetch_hstech_from_cache()
+            if cache_tech:
+                result["items"].extend(cache_tech)
+                logger.info(f"   ✅ 恒生科技指数: {cache_tech[0].get('price', 0)} [缓存恢复]")
+            else:
+                logger.warning("   ⚠️ 恒生科技指数: 所有数据源均失败")
 
-        # 3. 如果全部失败，尝试从缓存恢复
+        # 3. 如果全部失败，尝试从完整缓存恢复
         if len(result["items"]) == 0:
             cache_data = self._fetch_from_cache()
             if cache_data:
@@ -151,17 +154,26 @@ class HKStockCollector:
     def _fetch_hstech_from_akshare(self) -> List[Dict]:
         """
         专门从 akshare 采集恒生科技指数
-        ★ V2.0：增强匹配逻辑，支持多种名称变体
+        ★ 2026-09-06：改进匹配逻辑，增加多种名称变体匹配
         """
         try:
             import akshare as ak
 
-            target = self.AK_TARGETS[0]  # HSTECH
-            target_symbol = target["symbol"]
-            target_name = target["name"]
-            keywords = target["keywords"]
+            target_symbol = "HSTECH"
+            target_name = "恒生科技指数"
 
-            # ----- 方法1：stock_hk_index_daily（日线数据）-----
+            # ★ 名称变体列表（用于匹配）
+            name_variants = [
+                "恒生科技指数",
+                "恒生科技",
+                "HSTECH",
+                "Hang Seng Tech",
+                "HS Tech",
+                "科技指数",
+                "Tech Index",
+            ]
+
+            # 方法1：stock_hk_index_daily
             try:
                 df = ak.stock_hk_index_daily(symbol=target_symbol)
                 if df is not None and not df.empty:
@@ -179,7 +191,6 @@ class HKStockCollector:
                     if close_col:
                         price = float(latest.get(close_col, 0))
                         if price > 0:
-                            logger.debug(f"   stock_hk_index_daily({target_symbol}) 成功")
                             return [{
                                 "name": target_name,
                                 "symbol": target_symbol,
@@ -190,39 +201,42 @@ class HKStockCollector:
                                 "source": "akshare_daily"
                             }]
             except Exception as e:
-                logger.debug(f"   stock_hk_index_daily({target_symbol}) 失败: {e}")
+                logger.debug(f"   stock_hk_index_daily(HSTECH) 失败: {e}")
 
-            # ----- 方法2：stock_hk_index_spot（指数实时行情）-----
+            # 方法2：stock_hk_index_spot
             try:
                 df = ak.stock_hk_index_spot(symbol=target_symbol)
                 if df is not None and not df.empty:
                     row = df.iloc[0]
-                    # 尝试多种列名获取价格
+                    # 尝试多种列名
                     price = 0
-                    for col_name in ['最新价', 'price', '现价', '价']:
-                        if col_name in df.columns:
-                            price = float(row.get(col_name, 0))
-                            if price > 0:
-                                break
-                    if price == 0:
-                        # 尝试第一列数值
-                        for col in df.columns:
-                            if df[col].dtype in ['float64', 'int64']:
-                                price = float(row.get(col, 0))
+                    for col in ['最新价', 'price', '现价', '收盘价', 'close']:
+                        if col in row:
+                            try:
+                                price = float(row[col])
                                 if price > 0:
                                     break
-
-                    change_pct = 0
-                    for col_name in ['涨跌幅', 'change_pct', 'change']:
-                        if col_name in df.columns:
-                            try:
-                                change_pct = float(row.get(col_name, 0))
                             except (ValueError, TypeError):
-                                pass
-                            break
-
+                                continue
+                    if price <= 0:
+                        # 尝试取第一列数值
+                        for col in df.columns:
+                            try:
+                                val = float(row[col])
+                                if val > 0 and col not in ['涨跌幅', 'change', 'change_pct']:
+                                    price = val
+                                    break
+                            except (ValueError, TypeError):
+                                continue
+                    change_pct = 0
+                    for col in ['涨跌幅', 'change_pct', 'change']:
+                        if col in row:
+                            try:
+                                change_pct = float(row[col])
+                                break
+                            except (ValueError, TypeError):
+                                continue
                     if price > 0:
-                        logger.debug(f"   stock_hk_index_spot({target_symbol}) 成功")
                         return [{
                             "name": target_name,
                             "symbol": target_symbol,
@@ -233,82 +247,81 @@ class HKStockCollector:
                             "source": "akshare_index_spot"
                         }]
             except Exception as e:
-                logger.debug(f"   stock_hk_index_spot({target_symbol}) 失败: {e}")
+                logger.debug(f"   stock_hk_index_spot(HSTECH) 失败: {e}")
 
-            # ----- 方法3：stock_hk_spot（全市场实时行情中匹配）-----
+            # 方法3：stock_hk_spot（全市场实时行情中匹配）
             try:
                 df = ak.stock_hk_spot()
                 if df is not None and not df.empty:
-                    logger.debug(f"   stock_hk_spot 获取到 {len(df)} 条数据")
-
-                    # 先打印前 5 条的名称，便于调试
+                    # ★ 检测列名
                     name_col = None
                     price_col = None
+                    change_col = None
                     for col in df.columns:
-                        if 'name' in col.lower() or '名称' in col:
+                        col_lower = col.lower()
+                        if 'name' in col_lower or '名称' in col or '代码' in col:
                             name_col = col
-                            break
-                    if name_col is None:
-                        for col in df.columns:
-                            if '名' in col:
-                                name_col = col
-                                break
-
-                    if name_col:
-                        sample_names = []
-                        for _, row in df.head(5).iterrows():
-                            sample_names.append(str(row.get(name_col, '')))
-                        logger.debug(f"   数据中前5条名称: {sample_names}")
-
-                    # 价格列
-                    for col in df.columns:
-                        if 'price' in col.lower() or '现价' in col or '最新价' in col:
+                        if 'price' in col_lower or '现价' in col or '最新价' in col:
                             price_col = col
-                            break
+                        if 'change' in col_lower and 'pct' in col_lower or '涨跌幅' in col:
+                            change_col = col
+
+                    # ★ 如果找不到价格列，尝试取第一列数值
                     if price_col is None:
                         for col in df.columns:
-                            if '价' in col:
+                            if df[col].dtype in ['float64', 'int64']:
                                 price_col = col
                                 break
 
-                    if name_col and price_col:
-                        # 尝试所有匹配关键词
-                        matched_row = None
-                        matched_keyword = None
+                    if name_col is None:
+                        logger.debug("   stock_hk_spot: 未找到名称列")
+                        return []
+                    if price_col is None:
+                        logger.debug("   stock_hk_spot: 未找到价格列")
+                        return []
 
-                        for _, row in df.iterrows():
-                            name = str(row.get(name_col, '')).strip()
-                            if not name:
-                                continue
-
-                            # 检查是否匹配任何关键词
-                            for keyword in keywords:
-                                if keyword.lower() in name.lower():
-                                    matched_row = row
-                                    matched_keyword = keyword
-                                    break
-                            if matched_row is not None:
+                    # ★ 遍历数据，匹配恒生科技
+                    for _, row in df.iterrows():
+                        name = str(row.get(name_col, '')).strip()
+                        # 检查是否匹配任一名称变体
+                        matched = False
+                        for variant in name_variants:
+                            if variant.lower() in name.lower() or name.lower() in variant.lower():
+                                matched = True
                                 break
+                        if not matched:
+                            continue
 
-                        if matched_row is not None:
-                            price = float(matched_row.get(price_col, 0))
-                            if price > 0:
-                                logger.debug(f"   stock_hk_spot 匹配成功 (关键词: {matched_keyword})")
-                                return [{
-                                    "name": target_name,
-                                    "symbol": target_symbol,
-                                    "price": round(price, 2),
-                                    "change_pct": 0,
-                                    "volume": 0,
-                                    "date": datetime.now().strftime("%Y-%m-%d"),
-                                    "source": "akshare_spot"
-                                }]
-                        else:
-                            # 打印所有名称样本，帮助调试
-                            all_names = []
-                            for _, row in df.head(30).iterrows():
-                                all_names.append(str(row.get(name_col, '')))
-                            logger.debug(f"   前30条名称样本: {all_names[:10]}")
+                        price = 0
+                        try:
+                            price = float(row.get(price_col, 0))
+                        except (ValueError, TypeError):
+                            continue
+
+                        change_pct = 0
+                        if change_col:
+                            try:
+                                change_pct = float(row.get(change_col, 0))
+                            except (ValueError, TypeError):
+                                pass
+
+                        if price > 0:
+                            logger.info(f"   ✅ 从 stock_hk_spot 匹配到: {name} ({price})")
+                            return [{
+                                "name": target_name,
+                                "symbol": target_symbol,
+                                "price": round(price, 2),
+                                "change_pct": round(change_pct, 2),
+                                "volume": 0,
+                                "date": datetime.now().strftime("%Y-%m-%d"),
+                                "source": "akshare_spot"
+                            }]
+
+                    # ★ 如果没找到，打印前5条数据帮助调试（仅调试模式）
+                    logger.debug("   stock_hk_spot: 未匹配到恒生科技指数，前5条数据:")
+                    for idx, (_, row) in enumerate(df.head(5).iterrows()):
+                        if name_col:
+                            logger.debug(f"      {idx+1}. {row.get(name_col, 'N/A')}")
             except Exception as e:
                 logger.debug(f"   stock_hk_spot 匹配失败: {e}")
 
@@ -321,8 +334,19 @@ class HKStockCollector:
             logger.debug(f"akshare 恒生科技采集异常: {e}")
             return []
 
+    def _fetch_hstech_from_cache(self) -> List[Dict]:
+        """从缓存恢复恒生科技指数"""
+        cache_file = "staging/hk_stock_cache.json"
+        data = load_json(cache_file)
+        if data:
+            items = data.get('items', [])
+            for item in items:
+                if '恒生科技' in item.get('name', '') or 'HSTECH' in item.get('symbol', ''):
+                    return [item]
+        return []
+
     def _fetch_from_cache(self) -> List[Dict]:
-        """从缓存加载"""
+        """从缓存加载全部"""
         cache_file = "staging/hk_stock_cache.json"
         data = load_json(cache_file)
         if data:
@@ -336,8 +360,6 @@ def collect_hk_stock() -> Dict[str, Any]:
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = f"staging/hk_stock_{timestamp}.json"
-
-    # ★ 修复：save_json 签名是 (data, filepath)，不是 (filepath, data)
     save_json(result, filepath)
     save_json(result, "staging/hk_stock_cache.json")
 
