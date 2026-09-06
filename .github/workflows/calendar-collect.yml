@@ -1,13 +1,13 @@
-# data-collector 万年历采集工作流
-# 采集：A股/港股/美股交易日、节假日、冬令时/夏令时信息
-# 频率：每日 08:00（北京时间）
-# 输出：calendar_package_*.json（统一格式数据包）
+# data-collector 万年历采集工作流（知识库模式）
+# 采集：A股/港股/美股交易日、节假日、DST 信息
+# 策略：首次全量采集，后续仅增量补充缺失年份
+# 触发：每年1月1日执行 + 手动触发
 
-name: 📅 万年历采集
+name: 📅 万年历知识库采集
 
 on:
   schedule:
-    - cron: '0 8 * * *'              # 每日 08:00 执行
+    - cron: '0 0 1 1 *'              # 每年1月1日 00:00 执行
   workflow_dispatch:                  # 支持手动触发
 
 permissions:
@@ -21,8 +21,8 @@ env:
 jobs:
   collect-calendar:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    name: 📅 采集万年历数据
+    timeout-minutes: 15
+    name: 📅 采集万年历知识库
 
     steps:
       - name: 📥 检出代码
@@ -38,41 +38,48 @@ jobs:
           python -m pip install --upgrade pip
           pip install akshare pandas requests pyyaml pytz
 
-      - name: 📁 创建暂存区目录
-        run: mkdir -p staging
+      - name: 📁 创建知识库目录
+        run: mkdir -p knowledge_library/calendar/checkpoints
 
-      - name: 📅 采集万年历数据
+      - name: 📅 采集万年历数据（增量模式）
         run: python scripts/collect_calendar.py
         continue-on-error: true
 
-      - name: 🔏 数据签名
-        run: python scripts/sign.py
-        continue-on-error: true
-
-      - name: 📦 打包万年历数据
+      - name: 📦 打包当日状态（供私密库快速查询）
         run: python scripts/pack_calendar.py
         continue-on-error: true
 
-      - name: 📋 打印暂存区状态
+      - name: 📋 打印知识库状态
         run: |
-          echo "📦 万年历数据文件列表:"
-          ls -la staging/ | grep -E "calendar" || echo "   (暂无文件)"
+          echo "📂 知识库目录:"
+          ls -la knowledge_library/calendar/ || echo "   (目录不存在)"
           echo ""
-          echo "📊 文件统计:"
-          echo "   - 原始文件: $(ls staging/ | grep -E 'calendar_raw.*\.json' | wc -l)"
-          echo "   - 打包文件: $(ls staging/ | grep -E 'calendar_package_.*\.json' | wc -l)"
+          echo "📊 数据统计:"
+          if [ -f knowledge_library/calendar/calendar_knowledge.jsonl ]; then
+            echo "   - 条目数: $(wc -l < knowledge_library/calendar/calendar_knowledge.jsonl)"
+            echo "   - 文件大小: $(du -h knowledge_library/calendar/calendar_knowledge.jsonl | cut -f1)"
+          else
+            echo "   - 暂无数据"
+          fi
+          echo ""
+          if [ -f knowledge_library/calendar/meta.json ]; then
+            echo "📋 元数据:"
+            cat knowledge_library/calendar/meta.json
+          else
+            echo "   - 暂无元数据"
+          fi
 
-      - name: 📤 上传 Artifact（万年历打包数据）
+      - name: 📤 上传 Artifact（当日状态包）
         uses: actions/upload-artifact@v4
         with:
-          name: calendar-data
-          path: staging/calendar_package_*.json
+          name: calendar-status-data
+          path: staging/calendar_status_package_*.json
           retention-days: 7
 
       - name: ✅ 采集完成
         if: success()
         run: |
-          echo "✅ 万年历采集完成"
-          echo "   📅 包含: A股/港股/美股 交易日、节假日、DST 信息"
-          echo "   🕐 采集时间: 08:00"
-          echo "   📦 数据包格式: 统一格式（含 trade_date/is_trading_day/dst_active）"
+          echo "✅ 万年历知识库采集完成"
+          echo "   📅 数据已写入: knowledge_library/calendar/"
+          echo "   📦 状态包已生成: staging/calendar_status_package_*.json"
+          echo "   🕐 下次自动执行: 明年1月1日 00:00"
