@@ -1,0 +1,99 @@
+{
+  "version": "1.0",
+  "description": "书籍知识库书单源配置",
+  "sources": [
+    {
+      "id": "wikipedia_business_books",
+      "name": "维基百科-商业书籍列表",
+      "url": "https://en.wikipedia.org/wiki/List_of_business_books",
+      "type": "wikipedia_list",
+      "language": "en",
+      "enabled": true,
+      "category_whitelist": ["business", "finance", "economics", "management", "investing"]
+    },
+    {
+      "id": "wikipedia_finance_category",
+      "name": "维基百科-金融书籍分类",
+      "url": "https://en.wikipedia.org/wiki/Category:Finance_books",
+      "type": "wikipedia_category",
+      "language": "en",
+      "enabled": true,
+      "category_whitelist": ["finance", "investing", "economics"]
+    },
+    {
+      "id": "wikipedia_investment_books",
+      "name": "维基百科-投资书籍",
+      "url": "https://en.wikipedia.org/wiki/Category:Investment_books",
+      "type": "wikipedia_category",
+      "language": "en",
+      "enabled": true
+    },
+    {
+      "id": "wikipedia_economics_books",
+      "name": "维基百科-经济学书籍",
+      "url": "https://en.wikipedia.org/wiki/Category:Economics_books",
+      "type": "wikipedia_category",
+      "language": "en",
+      "enabled": true
+    },
+    {
+      "id": "wikipedia_behavioral_finance",
+      "name": "维基百科-行为金融学",
+      "url": "https://en.wikipedia.org/wiki/Category:Behavioral_finance",
+      "type": "wikipedia_category",
+      "language": "en",
+      "enabled": true
+    },
+    {
+      "id": "wikipedia_investment_zh",
+      "name": "维基百科-投资学著作",
+      "url": "https://zh.wikipedia.org/wiki/Category:投资学著作",
+      "type": "wikipedia_category",
+      "language": "zh",
+      "enabled": true
+    },
+    {
+      "id": "wikipedia_economics_zh",
+      "name": "维基百科-经济学著作",
+      "url": "https://zh.wikipedia.org/wiki/Category:经济学著作",
+      "type": "wikipedia_category",
+      "language": "zh",
+      "enabled": true
+    }
+  ],
+  "allowed_categories": [
+    "economics",
+    "finance",
+    "investing",
+    "business",
+    "management",
+    "behavioral_economics",
+    "behavioral_finance",
+    "financial_markets",
+    "asset_pricing",
+    "risk_management",
+    "value_investing",
+    "quantitative_finance",
+    "portfolio_management",
+    "cognitive_science",
+    "psychology",
+    "decision_theory",
+    "mental_models"
+  ],
+  "excluded_keywords": [
+    "fiction",
+    "novel",
+    "poetry",
+    "children",
+    "cookbook",
+    "self-help",
+    "spirituality",
+    "religion"
+  ],
+  "batch_config": {
+    "books_per_batch": 10,
+    "delay_between_batches": 5,
+    "max_books_total": 500,
+    "timeout_per_book": 15
+  }
+}
