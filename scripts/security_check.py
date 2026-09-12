@@ -3,6 +3,11 @@
 """
 data-collector 安全检查脚本
 通用敏感词检查，不含任何项目特有信息
+
+★ 2026-09-12 修复：只检查系统字段的 value，跳过用户内容
+  - 原逻辑：递归检查所有字符串，导致新闻正文里的通用英文词（internal/secret/token）大量误报
+  - 新逻辑：检查所有 key 名 + 只检查白名单路径下的 value
+  - 白名单路径（可通过 config.yaml 覆盖）：metadata / signature_metadata / config / package_metadata
 """
 
 import os
@@ -55,6 +60,14 @@ def get_timestamp() -> str:
 class SecurityChecker:
     """安全扫描器 - 仅检查通用敏感词"""
 
+    # ★ 2026-09-12 新增：默认需要检查 value 的字段路径白名单
+    DEFAULT_VALUE_CHECK_PATHS = [
+        "metadata",
+        "signature_metadata",
+        "config",
+        "package_metadata",
+    ]
+
     def __init__(self, config: Optional[Dict] = None):
         self.config = config or load_config()
         self._load_patterns()
@@ -63,7 +76,6 @@ class SecurityChecker:
         """加载阻止规则 - 仅使用通用敏感词"""
         sec_config = self.config.get('security_check', {})
 
-        # ✅ 修复：只保留通用敏感词，移除所有相关词汇
         self.blocked_keywords = sec_config.get('blocked_keywords', [
             "secret",
             "password",
@@ -84,6 +96,31 @@ class SecurityChecker:
         ])
 
         self.strict_mode = sec_config.get('strict_mode', False)
+
+        # ★ 2026-09-12 新增：value 检查路径白名单（可被 config.yaml 覆盖）
+        self.value_check_paths = sec_config.get(
+            'value_check_paths',
+            self.DEFAULT_VALUE_CHECK_PATHS
+        )
+
+    # ★ 2026-09-12 新增：判断某路径下的 string 是否需要检查 value
+    def _should_check_value(self, path: str) -> bool:
+        """
+        判断路径下的字符串值是否需要做敏感词检测
+
+        仅当路径等于白名单项或以白名单项 + '.' 开头时，才检查 value。
+        这样：
+          - metadata.internal_endpoint → 检查
+          - metadata.foo.bar.internal → 检查（子路径）
+          - content.items[0].summary → 跳过
+          - title / summary / content → 跳过
+        """
+        if not path:
+            return False
+        for prefix in self.value_check_paths:
+            if path == prefix or path.startswith(prefix + "."):
+                return True
+        return False
 
     def check_text(self, text: str) -> Tuple[bool, List[str]]:
         if not text:
@@ -114,6 +151,8 @@ class SecurityChecker:
         if isinstance(data, dict):
             for key, value in data.items():
                 current_path = f"{path}.{key}" if path else key
+
+                # 1. 检查 key 名（始终检查，防止字段名泄露）
                 is_safe, key_violations = self.check_text(key)
                 if not is_safe:
                     for v in key_violations:
@@ -123,6 +162,8 @@ class SecurityChecker:
                             "issue": v,
                             "value": key
                         })
+
+                # 2. 递归处理 value
                 sub_safe, sub_violations = self.check_data(value, current_path, depth + 1)
                 if not sub_safe:
                     violations.extend(sub_violations)
@@ -135,15 +176,18 @@ class SecurityChecker:
                     violations.extend(sub_violations)
 
         elif isinstance(data, str):
-            is_safe, text_violations = self.check_text(data)
-            if not is_safe:
-                for v in text_violations:
-                    violations.append({
-                        "path": path,
-                        "type": "text",
-                        "issue": v,
-                        "value": data[:100] + "..." if len(data) > 100 else data
-                    })
+            # ★ 2026-09-12 修复：只有白名单路径下的 value 才检查
+            # 原因：用户内容（title/summary/content）里的通用英文词会造成大量误报
+            if self._should_check_value(path):
+                is_safe, text_violations = self.check_text(data)
+                if not is_safe:
+                    for v in text_violations:
+                        violations.append({
+                            "path": path,
+                            "type": "text",
+                            "issue": v,
+                            "value": data[:100] + "..." if len(data) > 100 else data
+                        })
 
         return len(violations) == 0, violations
 
