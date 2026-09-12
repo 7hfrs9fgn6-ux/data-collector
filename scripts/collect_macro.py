@@ -9,6 +9,7 @@ data-collector 宏观数据采集模块（列名自动检测版）
 ★ 2026-08-15 修复：非交易日返回0值问题，动态缓存有效期 ★
 ★ 2026-08-20 修复：添加 generated_at 字段，增强错误日志 ★
 ★ 2026-08-20 增强：自动检测列名，适配 akshare API 变化 ★
+★ 2026-09-12 修复：GDP 候选列名扩展，覆盖 akshare 实际返回的中文列名 ★
 """
 
 import sys
@@ -249,13 +250,38 @@ class MacroDataCollector:
             logger.debug("   🔍 尝试获取 GDP 数据...")
             df = ak.macro_china_gdp()
             if df is not None and not df.empty:
-                # ★ 自动检测列名
-                value_col = _find_column(df, ['value', '数值', 'gdp', 'GDP', '总量'])
-                date_col = _find_column(df, ['date', '日期', 'quarter', '季度', 'report_date'])
-                quarter_col = _find_column(df, ['quarter', '季度', 'report_date'])
+                # ★ 2026-09-12 修复：扩展候选列名，覆盖 akshare 实际返回的中文列名
+                # akshare 实际列名（2024-2026）：'季度', '国内生产总值-绝对值', '国内生产总值-同比增长', ...
+                # 原候选 ['value', '数值', 'gdp', 'GDP', '总量'] 无法匹配中文列名 → value_col=None → value=0.0 → 跳过
+                # 新候选按精确度从高到低排序，'国内生产总值-绝对值' 优先
+                value_col = _find_column(df, [
+                    '国内生产总值-绝对值',
+                    '国内生产总值绝对值',
+                    'GDP绝对值',
+                    '绝对值',
+                    '国内生产总值',
+                    'GDP',
+                    'value',
+                    '数值',
+                    '总量'
+                ])
+                date_col = _find_column(df, ['date', '日期', 'quarter', '季度', 'report_date', '统计时间'])
+                quarter_col = _find_column(df, ['quarter', '季度', 'report_date', '统计时间'])
 
                 logger.debug(f"   📋 GDP DataFrame 列名: {list(df.columns)}")
                 logger.debug(f"   📋 GDP 检测到 value_col: {value_col}, date_col: {date_col}")
+
+                # ★ 2026-09-12 修复：兜底逻辑——若候选均未匹配，从左往右取第一个数值列
+                # 原因：akshare GDP 表中，绝对值列通常在所有列中最左（紧随'季度'之后）
+                if value_col is None:
+                    for col in list(df.columns):
+                        try:
+                            if df[col].dtype in ['float64', 'int64']:
+                                value_col = col
+                                logger.debug(f"   📋 GDP 兜底：使用第一个数值列 '{value_col}'")
+                                break
+                        except Exception:
+                            continue
 
                 latest = df.iloc[-1]
                 value = _safe_extract_value(latest, value_col)
