@@ -10,6 +10,7 @@ data-collector 宏观数据采集模块（列名自动检测版）
 ★ 2026-08-20 修复：添加 generated_at 字段，增强错误日志 ★
 ★ 2026-08-20 增强：自动检测列名，适配 akshare API 变化 ★
 ★ 2026-09-12 修复：GDP 候选列名扩展，覆盖 akshare 实际返回的中文列名 ★
+★ 2026-09-12 修复：GDP 按季度排序取最新 + unit 从"万亿元"改"亿元" + sanity log ★
 """
 
 import sys
@@ -251,9 +252,6 @@ class MacroDataCollector:
             df = ak.macro_china_gdp()
             if df is not None and not df.empty:
                 # ★ 2026-09-12 修复：扩展候选列名，覆盖 akshare 实际返回的中文列名
-                # akshare 实际列名（2024-2026）：'季度', '国内生产总值-绝对值', '国内生产总值-同比增长', ...
-                # 原候选 ['value', '数值', 'gdp', 'GDP', '总量'] 无法匹配中文列名 → value_col=None → value=0.0 → 跳过
-                # 新候选按精确度从高到低排序，'国内生产总值-绝对值' 优先
                 value_col = _find_column(df, [
                     '国内生产总值-绝对值',
                     '国内生产总值绝对值',
@@ -269,10 +267,9 @@ class MacroDataCollector:
                 quarter_col = _find_column(df, ['quarter', '季度', 'report_date', '统计时间'])
 
                 logger.debug(f"   📋 GDP DataFrame 列名: {list(df.columns)}")
-                logger.debug(f"   📋 GDP 检测到 value_col: {value_col}, date_col: {date_col}")
+                logger.debug(f"   📋 GDP 检测到 value_col: {value_col}, date_col: {date_col}, quarter_col: {quarter_col}")
 
                 # ★ 2026-09-12 修复：兜底逻辑——若候选均未匹配，从左往右取第一个数值列
-                # 原因：akshare GDP 表中，绝对值列通常在所有列中最左（紧随'季度'之后）
                 if value_col is None:
                     for col in list(df.columns):
                         try:
@@ -283,19 +280,39 @@ class MacroDataCollector:
                         except Exception:
                             continue
 
+                # ★ 2026-09-12 修复：按季度排序（确保 iloc[-1] 是最新数据）
+                # 原因：akshare 返回顺序可能为降序，直接 iloc[-1] 会取到最早一行
+                # 例如：47831.7 亿元对应 2006 年 Q1 GDP，说明 iloc[-1] 取错了行
+                if quarter_col:
+                    try:
+                        df = df.copy()
+                        df[quarter_col] = df[quarter_col].astype(str)
+                        df = df.sort_values(by=quarter_col, ascending=True).reset_index(drop=True)
+                        logger.debug(f"   📋 GDP 已按 '{quarter_col}' 升序排序")
+                    except Exception as e:
+                        logger.debug(f"   ⚠️ GDP 排序失败，使用原始顺序: {e}")
+
                 latest = df.iloc[-1]
                 value = _safe_extract_value(latest, value_col)
 
+                # ★ 2026-09-12 新增：sanity 检查（不丢弃数据，仅日志告警）
+                # 参考区间：季度 GDP 合理范围约 10000 - 500000 亿元（1 - 50 万亿元）
                 if value > 0:
+                    if value < 10000:
+                        logger.warning(f"   ⚠️ GDP 值异常小 ({value} 亿元)，可能取到了早期数据")
+                    elif value > 500000:
+                        logger.warning(f"   ⚠️ GDP 值异常大 ({value} 亿元)，请检查单位")
+
                     macro_data.append({
                         "indicator": "GDP",
                         "value": value,
+                        # ★ 2026-09-12 修复：unit 从"万亿元"改为"亿元"（与 akshare 实际单位对齐）
+                        "unit": "亿元",
                         "quarter": str(latest.get(quarter_col, '')) if quarter_col else '',
-                        "unit": "万亿元",
                         "date": str(latest.get(date_col, today)) if date_col else today
                     })
                     indicators_found.add("GDP")
-                    logger.info(f"   ✅ GDP: {value} 万亿元")
+                    logger.info(f"   ✅ GDP: {value} 亿元 ({latest.get(quarter_col, '') if quarter_col else ''})")
                 else:
                     logger.warning(f"   ⚠️ GDP 数据无效 (value={value})，跳过")
                     if log_level == 'DEBUG':
