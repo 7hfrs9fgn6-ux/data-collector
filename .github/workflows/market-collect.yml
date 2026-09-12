@@ -2,7 +2,10 @@
 # 采集：大宗商品、板块回撤、宏观数据、汇率
 # 频率：每6小时（0,6,12,18点）
 # ★ ★ ★ 2026-09-06 修改：移除美股采集（已独立）、取消21:30批次 ★ ★ ★
-# ★ ★ ★ 2026-09-12 修复：pack_market.py 移到 sign.py 之前，确保统一包有签名 ★ ★ ★
+# ★ ★ ★ 2026-09-12 修复：
+#   1. pack_market.py 移到 sign.py 之前，确保统一包有签名
+#   2. 上传路径扩展为统一包 + 独立包，确保私密库按 _get_file_pattern 匹配成功
+# ★ ★ ★
 
 name: 市场数据采集（大宗商品/板块/宏观/汇率）
 
@@ -59,7 +62,7 @@ jobs:
         continue-on-error: true
 
       # ============================================================
-      # ★ ★ ★ 2026-09-12 修复：调整顺序 ★ ★ ★
+      # ★ ★ ★ 2026-09-12 修复：pack → sign 顺序 ★ ★ ★
       # 原顺序：sign → pack（导致 market_package_*.json 无签名）
       # 新顺序：pack → sign（确保统一包和独立包都有签名）
       # ============================================================
@@ -77,18 +80,19 @@ jobs:
           ls -la staging/ || echo "   (staging 目录为空)"
           echo ""
           echo "📊 文件统计:"
-          echo "   - 宏观文件: $(ls staging/ | grep -E 'macro.*\.json' | wc -l)"
-          echo "   - 板块文件: $(ls staging/ | grep -E 'sector.*\.json' | wc -l)"
-          echo "   - 汇率文件: $(ls staging/ | grep -E 'forex.*\.json' | wc -l)"
-          echo "   - 大宗商品文件: $(ls staging/ | grep -E 'commodity.*\.json' | wc -l)"
-          echo "   - 统一市场包: $(ls staging/ | grep -E 'market_package.*\.json' | wc -l)"
+          echo "   - 统一包: $(ls staging/ | grep -E 'market_package.*\.json' | wc -l)"
+          echo "   - macro 签名文件: $(ls staging/ | grep -E 'macro.*_signed\.json' | wc -l)"
+          echo "   - sector 签名文件: $(ls staging/ | grep -E 'sector.*_signed\.json' | wc -l)"
+          echo "   - forex 签名文件: $(ls staging/ | grep -E 'forex.*_signed\.json' | wc -l)"
+          echo "   - commodity 签名文件: $(ls staging/ | grep -E 'commodity.*_signed\.json' | wc -l)"
 
       # ============================================================
-      # ★ 上传市场数据包（含统一包 + 独立包）
-      # ★ 2026-09-12 修复：
-      #   1. 保留 market_package_*.json（统一包，供通用消费者）
-      #   2. 同时保留独立包（macro_* / commodity_* / sector_* / forex_*）
-      #      确保私密库按 _get_file_pattern 匹配时能命中（如 "macro_" → macro_*.json）
+      # ★ ★ ★ 2026-09-12 修复：扩展上传路径 ★ ★ ★
+      # 原路径：只上传 market_package_*.json
+      # 新路径：统一包 + 独立签名包
+      # 原因：私密库 public_repo_client._get_file_pattern("macro") = "macro_"
+      #      需要独立包才能匹配成功，避免降级到统一包
+      # 只上传 _signed 版本，避免私密库匹配到未签名的原始文件
       # ============================================================
       - name: 📤 上传 Artifact（市场数据）
         uses: actions/upload-artifact@v4
@@ -96,10 +100,10 @@ jobs:
           name: market-data
           path: |
             staging/market_package_*.json
-            staging/macro_*.json
-            staging/commodity_*.json
-            staging/sector_*.json
-            staging/forex_*.json
+            staging/macro_*_signed.json
+            staging/commodity_*_signed.json
+            staging/sector_*_signed.json
+            staging/forex_*_signed.json
           retention-days: 7
 
       - name: ✅ 采集完成
@@ -107,4 +111,4 @@ jobs:
         run: |
           echo "✅ 市场数据采集完成"
           echo "   📦 包含: 大宗商品、板块、宏观、汇率"
-          echo "   📦 已上传统一包 + 独立包（均有签名）"
+          echo "   📦 已上传统一包 + 独立签名包"
