@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-历史数据采集模块（修复版 V2.0）
-版本： 2.0
-更新日期： 2026-08-29
+历史数据采集模块（修复版 V2.1）
+版本： 2.1
+更新日期： 2026-09-13
 职责： 采集几十年历史行情、宏观、事件数据，统一打包签名
 
 ★ 采集内容：
@@ -11,6 +11,13 @@
   2. 历史宏观数据 - GDP、CPI、PMI
   3. 历史事件数据 - 重大政策、经济事件
   4. 历史板块数据 - 申万一级行业历史表现
+
+★ V2.1 修复（2026-09-13）：
+  - 板块数据采集：重试间隔从固定 1s 改为递增 5s / 15s（用户反馈凌晨时段接口不稳）
+  - 板块数据采集：单接口超时从 15s/10s 收紧为 8s（避免长时间卡死）
+  - 板块数据采集：失败详情写入 metadata.failed_sectors（供私密库决策）
+  - 打包函数：透传 failed_sectors 到 package metadata（供私密库检查完整性）
+  - 空包分支：同样透传 failed_sectors
 
 ★ V2.0 修复（2026-08-29）：
   - 板块数据采集：增加超时控制（防止单接口卡死）
@@ -605,18 +612,20 @@ def fetch_historical_events(years: int = 30) -> Dict[str, Any]:
 
 
 # ============================================================
-# 4. 历史板块数据（V2.0 增强版 - 高稳定性）
+# 4. 历史板块数据（V2.1 增强版 - 递增重试 + 失败详情）
 # ============================================================
 
 def fetch_historical_sector(years: int = 20, max_retries: int = 2) -> Dict[str, Any]:
     """
-    采集历史板块数据（增强版 V2.0）
+    采集历史板块数据（增强版 V2.1）
+    ★ V2.1 增强（2026-09-13）：
+       - 重试间隔从固定 1s 改为递增 5s / 15s（应对凌晨时段接口不稳定）
+       - 单接口超时从 15s/10s 收紧为 8s（避免长时间卡死）
+       - 失败详情写入 result["metadata"]["failed_sectors"]（供私密库决策）
     ★ V2.0 增强（2026-08-29）：
        - 使用 threading 实现超时控制，防止单个接口卡死
        - 增加重试机制（每个接口最多重试 2 次）
-       - 增加详细的错误日志，便于定位问题
        - 单个板块失败不影响其他板块
-       - 如果板块全部失败，返回空数据（不阻塞整体打包）
     """
     logger.info(f"📊 开始采集历史板块数据 (回溯 {years} 年)")
 
@@ -629,7 +638,8 @@ def fetch_historical_sector(years: int = 20, max_retries: int = 2) -> Dict[str, 
         "data": {},
         "metadata": {
             "source": "akshare",
-            "collected_at": datetime.now().isoformat()
+            "collected_at": datetime.now().isoformat(),
+            "failed_sectors": []  # ★ V2.1 新增
         }
     }
 
@@ -658,8 +668,11 @@ def fetch_historical_sector(years: int = 20, max_retries: int = 2) -> Dict[str, 
         "石油石化": "801960"
     }
 
+    # ★ V2.1：递增重试间隔
+    retry_waits = [5, 15]
+
     # ★ V2.0：使用 threading 实现超时控制
-    def _call_with_timeout(func, timeout: int = 15) -> Any:
+    def _call_with_timeout(func, timeout: int = 8) -> Any:
         """在超时时间内执行函数"""
         result = [None]
         exception = [None]
@@ -687,7 +700,7 @@ def fetch_historical_sector(years: int = 20, max_retries: int = 2) -> Dict[str, 
 
     success_count = 0
     fail_count = 0
-    fail_details = []
+    failed_sectors = []  # ★ V2.1 新增
 
     for sector, symbol in sector_codes.items():
         logger.info(f"   采集 {sector} 历史数据 ({symbol})...")
@@ -695,7 +708,7 @@ def fetch_historical_sector(years: int = 20, max_retries: int = 2) -> Dict[str, 
         df = None
         error_messages = []
 
-        # ★ V2.0：按稳定性排序的接口尝试列表
+        # ★ V2.1：单接口超时从 15s/10s 收紧为 8s
         api_attempts = [
             {
                 "name": "stock_zh_index_hist",
@@ -704,12 +717,12 @@ def fetch_historical_sector(years: int = 20, max_retries: int = 2) -> Dict[str, 
                     period="daily",
                     start_date=(datetime.now() - timedelta(days=years * 365)).strftime("%Y-%m-%d")
                 ),
-                "timeout": 15
+                "timeout": 8
             },
             {
                 "name": "index_hist_sw",
                 "func": lambda s=symbol: ak.index_hist_sw(symbol=s),
-                "timeout": 10
+                "timeout": 8
             }
         ]
 
@@ -721,13 +734,23 @@ def fetch_historical_sector(years: int = 20, max_retries: int = 2) -> Dict[str, 
                 if df is not None and not df.empty:
                     break
 
+                # ★ V2.1：每次重试前等待（递增 5s / 15s）
+                if retry > 0:
+                    wait_time = retry_waits[min(retry - 1, len(retry_waits) - 1)]
+                    logger.info(f"      ⏳ {sector}: 等待 {wait_time}s 后进行第 {retry + 1} 次尝试...")
+                    time.sleep(wait_time)
+
                 try:
-                    logger.debug(f"      [{sector}] 尝试 {attempt['name']} (重试 {retry}/{max_retries})")
+                    if retry == 0:
+                        logger.debug(f"      [{sector}] 尝试 {attempt['name']} (首次)")
+                    else:
+                        logger.info(f"      [{sector}] 尝试 {attempt['name']} (重试 {retry}/{max_retries})")
+
                     result_data = _call_with_timeout(attempt["func"], attempt["timeout"])
 
                     if result_data is not None and not result_data.empty:
                         df = result_data
-                        logger.debug(f"      ✅ {sector}: {attempt['name']} 成功")
+                        logger.info(f"      ✅ {sector}: {attempt['name']} 成功 (尝试 {retry + 1} 次)")
                         break
                     else:
                         msg = f"{attempt['name']} 返回空数据"
@@ -738,13 +761,18 @@ def fetch_historical_sector(years: int = 20, max_retries: int = 2) -> Dict[str, 
                     msg = f"{attempt['name']}: {str(e)[:80]}"
                     logger.debug(f"      ❌ {sector}: {msg}")
                     error_messages.append(msg)
-                    time.sleep(1)  # 重试前等待
 
         if df is None or df.empty:
             elapsed = time.time() - start_time_sector
             logger.warning(f"   ⚠️ {sector}: 所有接口均无数据 (耗时 {elapsed:.1f}s)")
             fail_count += 1
-            fail_details.append(f"{sector}: {', '.join(error_messages[-3:])}")
+            # ★ V2.1：记录失败详情
+            failed_sectors.append({
+                "sector": sector,
+                "symbol": symbol,
+                "errors": error_messages[-3:] if error_messages else ["未知原因"],
+                "elapsed_seconds": round(elapsed, 1)
+            })
             continue
 
         # ★ 智能检测列名
@@ -760,6 +788,12 @@ def fetch_historical_sector(years: int = 20, max_retries: int = 2) -> Dict[str, 
         if date_col is None:
             logger.warning(f"   ⚠️ {sector}: 未找到日期列，列名: {list(df.columns)[:5]}")
             fail_count += 1
+            failed_sectors.append({
+                "sector": sector,
+                "symbol": symbol,
+                "errors": ["未找到日期列"],
+                "elapsed_seconds": round(time.time() - start_time_sector, 1)
+            })
             continue
 
         # ★ 解析数据
@@ -798,15 +832,27 @@ def fetch_historical_sector(years: int = 20, max_retries: int = 2) -> Dict[str, 
             elapsed = time.time() - start_time_sector
             logger.warning(f"   ⚠️ {sector}: 无有效数据 (耗时 {elapsed:.1f}s)")
             fail_count += 1
+            failed_sectors.append({
+                "sector": sector,
+                "symbol": symbol,
+                "errors": ["解析后无有效数据"],
+                "elapsed_seconds": round(elapsed, 1)
+            })
 
         # ★ V2.0：采集间隔（防止被限流）
         time.sleep(0.5)
 
+    # ★ V2.1：写入失败详情到 metadata
+    result["metadata"]["failed_sectors"] = failed_sectors
+    result["metadata"]["success_count"] = success_count
+    result["metadata"]["fail_count"] = fail_count
+    result["metadata"]["total_sectors"] = len(sector_codes)
+
     # ★ V2.0：最终统计
     logger.info(f"   📊 板块采集完成: 成功 {success_count}/{len(sector_codes)} 个, 失败 {fail_count} 个")
 
-    if fail_details:
-        logger.debug(f"   📝 失败详情: {fail_details[:5]}")
+    if failed_sectors:
+        logger.warning(f"   ⚠️ 失败板块列表: {[f['sector'] for f in failed_sectors]}")
 
     # ★ V2.0：即使全部失败，也返回空数据（不阻塞整体打包）
     if success_count == 0:
@@ -816,7 +862,7 @@ def fetch_historical_sector(years: int = 20, max_retries: int = 2) -> Dict[str, 
 
 
 # ============================================================
-# 5. 统一打包与签名（保持不变）
+# 5. 统一打包与签名（V2.1 透传 failed_sectors）
 # ============================================================
 
 def pack_historical_data(
@@ -858,6 +904,16 @@ def pack_historical_data(
         ),
         "data_types": list(package["contents"].keys())
     }
+
+    # ★ V2.1：透传 failed_sectors（供私密库检查完整性）
+    if sector_data and sector_data.get('metadata'):
+        sector_meta = sector_data.get('metadata', {})
+        if sector_meta.get('failed_sectors'):
+            package["metadata"]["failed_sectors"] = sector_meta.get('failed_sectors')
+            package["metadata"]["sector_success_count"] = sector_meta.get('success_count', 0)
+            package["metadata"]["sector_fail_count"] = sector_meta.get('fail_count', 0)
+            package["metadata"]["sector_total"] = sector_meta.get('total_sectors', 0)
+            logger.warning(f"   ⚠️ 板块失败详情已写入 package.metadata: {sector_meta.get('fail_count')} 个板块失败")
 
     key = get_signing_key()
     if key:
@@ -902,7 +958,7 @@ def save_debug_data(data: Dict[str, Any], suffix: str):
 
 
 # ============================================================
-# 7. 主入口（V2.0 增强错误处理）
+# 7. 主入口（V2.1 透传 failed_sectors 到空包）
 # ============================================================
 
 def main():
@@ -983,6 +1039,11 @@ def main():
                 ]
             }
         }
+        # ★ V2.1：空包也透传 failed_sectors
+        if sector_data and sector_data.get('metadata'):
+            sector_meta = sector_data.get('metadata', {})
+            if sector_meta.get('failed_sectors'):
+                package["metadata"]["failed_sectors"] = sector_meta.get('failed_sectors')
         key = get_signing_key()
         if key:
             package["signature"] = sign_data(package, key)
@@ -997,6 +1058,11 @@ def main():
     logger.info(f"   📦 输出文件: {filepath}")
     logger.info(f"   📊 数据包大小: {len(package.get('contents', {}))} 个数据类型")
     logger.info(f"   🔐 签名状态: {'✅ 已签名' if package.get('signature') else '⚠️ 未签名'}")
+
+    # ★ V2.1：最终输出失败板块摘要
+    failed = package.get('metadata', {}).get('failed_sectors', [])
+    if failed:
+        logger.warning(f"   ⚠️ 本次采集失败板块: {[f.get('sector') for f in failed]}")
 
     return 0
 
