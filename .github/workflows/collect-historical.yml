@@ -1,13 +1,14 @@
 # data-collector 历史数据采集工作流
 # 采集：几十年历史行情、宏观、事件、板块数据
-# 频率：每12小时一次（每日06:00和18:00，北京时间）
-# ★ ★ ★ 2026-08-29 修改：采集频率从每周一次提升至每日两次 ★ ★ ★
+# 频率：每日 3 次（北京时间 08:00 / 14:00 / 20:00）
+# ★ ★ ★ 2026-09-13 修改：从 2 个采样点扩展为 3 个采样点，避免凌晨时段接口不稳定 ★ ★ ★
 
 name: Historical Data Collection
 
 on:
   schedule:
-    - cron: '0 6,18 * * *'        # 每天 06:00 和 18:00（北京时间）
+    - cron: '0 0,6,12 * * *'        # UTC 00:00, 06:00, 12:00
+                                     # 对应北京时间 08:00, 14:00, 20:00
   workflow_dispatch:
     inputs:
       years:
@@ -83,6 +84,8 @@ jobs:
           name: historical-data
           path: staging/historical_package_*.json
           retention-days: 30
+          # actions/upload-artifact@v4 默认 overwrite: false
+          # 同名 Artifact 会保留多版本，私密库可按 created_at 选择
 
       - name: 完成日志
         run: |
